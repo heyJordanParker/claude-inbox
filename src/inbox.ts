@@ -144,13 +144,16 @@ export function withAgents(items: readonly Item[]): Item[] {
   return items.filter((item) => item.status === 'corrected')
 }
 
+const longestId = 48
+
 export function newId(title: string, taken: readonly string[]): string {
-  const slug =
-    title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 48) || 'item'
+  const words = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+  const boundary = words.lastIndexOf('-', longestId)
+  const cut = words.length <= longestId ? words : words.slice(0, boundary > 0 ? boundary : longestId)
+  const slug = cut || 'item'
   if (!taken.includes(slug)) return slug
   for (let index = 2; ; index += 1) if (!taken.includes(`${slug}-${index}`)) return `${slug}-${index}`
 }

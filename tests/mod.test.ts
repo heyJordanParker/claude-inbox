@@ -272,6 +272,16 @@ test('every subscribed session that is running hears the answer, and one that is
   expect(mod.shown.prompts).toEqual([])
 })
 
+test('a long title gives an id cut between words, and a repeated title a numbered one', async () => {
+  const mod = tested()
+  const title = 'Do we want the inbox to sort by unblocked sessions?'
+  const first = await filed(mod, 'ask_question', { title, why: 'It decides the queue order' })
+  const second = await filed(mod, 'ask_question', { title, why: 'It decides the queue order' })
+
+  expect(first.id).toBe('do-we-want-the-inbox-to-sort-by-unblocked')
+  expect(second.id).toBe('do-we-want-the-inbox-to-sort-by-unblocked-2')
+})
+
 test('subscribe and unsubscribe change who hears an item', async () => {
   const mod = tested()
   const item = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
