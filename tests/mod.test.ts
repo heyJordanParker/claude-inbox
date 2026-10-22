@@ -44,7 +44,7 @@ function question(subscribers: Item['subscribers']): Item {
 }
 
 function tested(options: { readonly sessions?: readonly FakeSession[]; readonly files?: Record<string, string> } = {}) {
-  const mod = testMod(inbox, { projectRoot: project, files: { ...files, ...options.files }, ...(options.sessions === undefined ? {} : { sessions: options.sessions }) })
+  const mod = testMod(inbox, { projectRoot: project, files: { ...files, ...options.files }, sessions: [{ id: 'test-session', title: 'php#', isRunning: true }, ...(options.sessions ?? [])] })
   mod.fakes.process.run = async (argv) => ({ exitCode: 0, stdout: JSON.stringify(traced(argv)), stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
   return mod
 }
@@ -198,14 +198,14 @@ test('a correction on one Solution names it, and a revision from another session
   expect(mod.shown.prompts).toEqual([
     `Inbox: the user corrected "Exhaustive match needs no default" (${item.id}) at "A full match still demands a default › Solution: No default": "Name the precedent languages in the summary". Revise it with the inbox's revise tool.`,
   ])
-  expect(await mod.shown.page.lines({ columns: 160 })).toEqual(['The inbox is empty.', '', 'Being revised', 'test-session · Exhaustive match needs no default'])
+  expect(await mod.shown.page.lines({ columns: 160 })).toEqual(['The inbox is empty.', '', 'Being revised', 'php# · Exhaustive match needs no default'])
 
   const revised = { ...proposal, problems: [{ ...proposal.problems[0], solution: { ...solution, summary: 'Rust and C# prove every case is handled' } }] }
   expect(await mod.callTool('revise', { id: item.id, proposal: revised })).toEqual({ result: `Revised ${item.id}. It waits for the person again.` })
 
   const lines = await mod.shown.page.lines({ columns: 160 })
   expect(lines).toContain('Exhaustive match needs no default')
-  expect(lines.some((line) => line.includes('test-session · proposal · 1 of 1 · changed since you read it'))).toBe(true)
+  expect(lines.some((line) => line.includes('php# · proposal · 1 of 1 · changed since you read it'))).toBe(true)
   expect(lines).toContain('▸ Problem: A full match still demands a default — Every enum match carries dead code  · changed inside')
 })
 
@@ -283,6 +283,14 @@ test('a long title gives an id cut between words, and a repeated title a numbere
   expect(second.id).toBe('do-we-want-the-inbox-to-sort-by-unblocked-2')
 })
 
+test('a session with no title is named by the start of its id', async () => {
+  const mod = testMod(inbox, { projectRoot: project })
+  const answer = await mod.callTool('ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
+
+  expect('result' in answer).toBe(true)
+  expect(mod.state.memory.items[0]?.origin.title).toBe('test-ses')
+})
+
 test('subscribe and unsubscribe change who hears an item', async () => {
   const mod = tested()
   const item = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
@@ -297,7 +305,7 @@ test('read lists what is open, and gives one item with every answer and the revi
   const mod = tested()
   const item = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   expect(await mod.callTool('read', {})).toEqual({
-    result: JSON.stringify([{ id: item.id, kind: 'question', status: 'waiting', title: 'Do we want courses?', project, origin: 'test-session', subscribers: ['test-session'] }]),
+    result: JSON.stringify([{ id: item.id, kind: 'question', status: 'waiting', title: 'Do we want courses?', project, origin: 'php#', subscribers: ['php#'] }]),
   })
 
   await mod.type('/inbox')

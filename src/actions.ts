@@ -10,9 +10,10 @@ function labelOf(title: string, id: string): string {
   return line.length <= longestLabel ? line : `${line.slice(0, longestLabel - 1).trimEnd()}…`
 }
 
-export function author(): Author {
+export async function author(): Promise<Author> {
   const { id, title, agentType } = sessions.current
-  return { session: id, title: labelOf(title, id), ...(agentType === undefined ? {} : { agent: agentType }) }
+  const known = title === '' ? ((await sessions.list({ running: true })).find((session) => session.id === id)?.title ?? '') : title
+  return { session: id, title: labelOf(known, agentType === undefined ? id.slice(0, 8) : `${agentType} ${id.slice(0, 8)}`), ...(agentType === undefined ? {} : { agent: agentType }) }
 }
 
 function remember(mod: Mod<InboxState>, items: readonly Item[]): void {

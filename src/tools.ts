@@ -31,7 +31,7 @@ function isClosed(item: Item): boolean {
 async function file(mod: Mod<InboxState>, declared: DeclaredContent): Promise<string> {
   const project = sessions.current.project
   const content = await completeContent(declared, project)
-  const by = author()
+  const by = await author()
   const now = new Date().toISOString()
   const item = await create(mod, declared.title, (id) => ({
     id,
@@ -87,7 +87,7 @@ export function inboxTools(loaded: Promise<void>): Job<Tool, InboxState>[] {
         const kinds = (['proposal', 'options', 'question'] as const).filter((each) => input[each] !== undefined)
         if (kinds.length !== 1 || kinds[0] !== known.kind) throw new Error(`${known.id} is a ${kindWords[known.kind]}, so give exactly one key, ${known.kind}, with the whole item.`)
         const content = await completeContent({ kind: known.kind, ...(input[known.kind] as object) } as DeclaredContent, known.project)
-        const by = author()
+        const by = await author()
         const revised = await change(mod, known.id, (fresh) => {
           if (isClosed(fresh)) throw new Error(`${fresh.id} is ${fresh.status}. Put a new item in the inbox instead.`)
           return { ...fresh, revisions: [...fresh.revisions, { ...by, content, at: new Date().toISOString() }], status: 'waiting' }
@@ -97,7 +97,7 @@ export function inboxTools(loaded: Promise<void>): Job<Tool, InboxState>[] {
       },
     ),
     inboxTool(loaded, 'withdraw', 'Take an item out of the inbox because it no longer needs an answer.', schemas.withdraw, async (input, mod) => {
-      const by = author()
+      const by = await author()
       const reason = input['reason'] as string
       const withdrawn = await change(mod, input['id'] as string, (fresh) => {
         if (isClosed(fresh)) throw new Error(`${fresh.id} is already ${fresh.status}.`)
@@ -107,7 +107,7 @@ export function inboxTools(loaded: Promise<void>): Job<Tool, InboxState>[] {
       return `Withdrew ${withdrawn.id}.`
     }),
     inboxTool(loaded, 'subscribe', 'Hear every change to an inbox item in this session: each revision, the answer, and a withdrawal.', schemas.subscribe, async (input, mod) => {
-      const by = author()
+      const by = await author()
       let isNew = false
       const item = await change(mod, input['id'] as string, (fresh) => {
         isNew = !fresh.subscribers.some((each) => each.session === by.session)
@@ -116,7 +116,7 @@ export function inboxTools(loaded: Promise<void>): Job<Tool, InboxState>[] {
       return isNew ? `This session now hears every change to ${item.id}.` : `This session already hears ${item.id}.`
     }),
     inboxTool(loaded, 'unsubscribe', 'Stop hearing changes to an inbox item in this session.', schemas.unsubscribe, async (input, mod) => {
-      const by = author()
+      const by = await author()
       const item = await change(mod, input['id'] as string, (fresh) => ({ ...fresh, subscribers: fresh.subscribers.filter((each) => each.session !== by.session) }))
       return `This session no longer hears ${item.id}.`
     }),
