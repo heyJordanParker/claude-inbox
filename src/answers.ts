@@ -1,5 +1,5 @@
 import type { Mod } from '../node_modules/@cmodjs/core/mod.js'
-import { find, save, tell } from './actions.js'
+import { change, tell } from './actions.js'
 import { current, type Answer, type Item, type Status } from './inbox.js'
 import type { InboxState } from './state.js'
 
@@ -7,23 +7,36 @@ export type Given = Pick<Answer, 'kind' | 'option' | 'words' | 'target'>
 
 const statusAfter: Readonly<Record<Given['kind'], Status>> = { approve: 'answered', option: 'answered', answer: 'answered', correct: 'corrected', withdraw: 'withdrawn' }
 
-export async function answer(mod: Mod<InboxState>, id: string, given: Given): Promise<void> {
-  const item = find(mod, id)
-  const revision = item.revisions.length - 1
-  const answered: Item = {
-    ...item,
-    status: statusAfter[given.kind],
-    lastRead: revision,
-    answers: [...item.answers, { ...given, revision, by: 'person', at: new Date().toISOString() }],
-  }
-  await save(mod, answered)
-  forget(mod, id)
-  await tell(answered, messageOf(answered, given), 'prompt')
+class Moved extends Error {}
+
+function unchanged(fresh: Item, seen: number): void {
+  if (fresh.status === 'answered' || fresh.status === 'withdrawn') throw new Moved(`"${current(fresh).title}" was ${fresh.status} while you read it.`)
+  if (fresh.revisions.length - 1 !== seen) throw new Moved(`"${current(fresh).title}" was revised while you read it. Read the new revision, then answer.`)
 }
 
-export async function later(mod: Mod<InboxState>, id: string): Promise<void> {
-  const item = find(mod, id)
-  await save(mod, { ...item, lastRead: item.revisions.length - 1, queuedAt: new Date().toISOString() })
+export async function answer(mod: Mod<InboxState>, id: string, seen: number, given: Given): Promise<void> {
+  try {
+    const answered = await change(mod, id, (fresh) => {
+      unchanged(fresh, seen)
+      return {
+        ...fresh,
+        status: statusAfter[given.kind],
+        lastRead: seen,
+        answers: [...fresh.answers, { ...given, revision: seen, by: 'person', at: new Date().toISOString() }],
+      }
+    })
+    forget(mod, id)
+    const heard = await tell(answered, messageOf(answered, given), 'prompt')
+    if (heard === 0) mod.toast.warning(`No running session follows "${current(answered).title}"`, { description: 'Your answer is kept with the item, and an agent reads it with the read tool.' })
+  } catch (error) {
+    if (!(error instanceof Moved)) throw error
+    mod.state.memory.correcting = null
+    mod.toast.warning(error.message)
+  }
+}
+
+export async function later(mod: Mod<InboxState>, id: string, seen: number): Promise<void> {
+  await change(mod, id, (fresh) => ({ ...fresh, lastRead: seen, queuedAt: new Date().toISOString() }))
   forget(mod, id)
 }
 

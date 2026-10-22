@@ -125,26 +125,31 @@ async function completeDrawing(drawing: DeclaredDrawing, code: CodeReader, where
       refusals.push(`${where}: ${drawing.path} does not exist, so its lines cannot change.`)
       return { ...drawing, startLine: 1, before: [], after: [] }
     }
-    const text = await code.text(drawing.path)
-    const at = text.indexOf(drawing.old)
-    if (at === -1) {
-      refusals.push(`${where}: ${drawing.path} does not hold the old lines. Copy them from the file as they are now.`)
-      return { ...drawing, startLine: 1, before: [], after: [] }
+    const lines = linesOf(await code.text(drawing.path))
+    const old = linesOf(drawing.old)
+    const fresh = drawing.new === '' ? [] : linesOf(drawing.new)
+    const matches = lines.flatMap((_, index) => (old.every((line, offset) => lines[index + offset] === line) ? [index] : []))
+    const normalized = { ...drawing, old: old.join('\n'), new: fresh.join('\n') }
+    if (matches.length !== 1) {
+      refusals.push(
+        matches.length === 0
+          ? `${where}: ${drawing.path} does not hold the old lines as whole lines. Copy them from the file as they are now.`
+          : `${where}: ${drawing.path} holds the old lines ${matches.length} times, at lines ${matches.map((index) => index + 1).join(', ')}. Add the lines around them so they match once.`,
+      )
+      return { ...normalized, startLine: 1, before: [], after: [] }
     }
-    const end = at + drawing.old.length
-    if ((at > 0 && text[at - 1] !== '\n') || (end < text.length && text[end] !== '\n')) {
-      refusals.push(`${where}: the old lines of ${drawing.path} start or end inside a line. Give whole lines.`)
-      return { ...drawing, startLine: 1, before: [], after: [] }
-    }
-    const lines = text.split('\n')
-    const startLine = text.slice(0, at).split('\n').length
-    const endLine = startLine + drawing.old.split('\n').length - 1
+    const [at = 0] = matches
     return {
-      ...drawing,
-      startLine,
-      before: lines.slice(Math.max(0, startLine - 1 - contextLines), startLine - 1),
-      after: lines.slice(endLine, endLine + contextLines),
+      ...normalized,
+      startLine: at + 1,
+      before: lines.slice(Math.max(0, at - contextLines), at),
+      after: lines.slice(at + old.length, at + old.length + contextLines),
     }
   }
   return drawing
+}
+
+function linesOf(text: string): string[] {
+  const unified = text.replace(/\r\n/g, '\n')
+  return (unified.endsWith('\n') ? unified.slice(0, -1) : unified).split('\n')
 }

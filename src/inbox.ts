@@ -105,6 +105,7 @@ export type Item = {
   readonly answers: readonly Answer[]
   readonly lastRead: number
   readonly queuedAt: string
+  readonly updatedAt: string
   readonly status: Status
 }
 
@@ -114,20 +115,57 @@ export type Store = {
   readonly changed: string
 }
 
+export type Read = { readonly items: readonly Item[]; readonly unreadable: readonly string[] }
+
 export function storeIn(dataFolder: string): Store {
   return { folder: dataFolder, items: `${dataFolder}/items`, changed: `${dataFolder}/changed` }
 }
 
-export async function readItems(store: Store): Promise<Item[]> {
-  if (!(await fs.exists(store.items))) return []
-  const entries = await fs.list(store.items)
-  const items = await Promise.all(entries.filter((entry) => entry.isFile && entry.name.endsWith('.json')).map(async (entry) => JSON.parse(await fs.read(`${store.items}/${entry.name}`)) as Item))
-  return items.sort((a, b) => a.queuedAt.localeCompare(b.queuedAt))
+function pathOf(store: Store, id: string): string {
+  return `${store.items}/${id}.json`
 }
 
-export async function writeItem(store: Store, item: Item): Promise<void> {
-  await fs.write(`${store.items}/${item.id}.json`, `${JSON.stringify(item, null, 2)}\n`)
-  await fs.write(store.changed, `${new Date().toISOString()} ${item.id}\n`)
+async function storedIds(store: Store): Promise<string[]> {
+  if (!(await fs.exists(store.items))) return []
+  return (await fs.list(store.items)).filter((entry) => entry.isFile && entry.name.endsWith('.json')).map((entry) => entry.name.slice(0, -'.json'.length))
+}
+
+async function readItem(store: Store, id: string): Promise<Item | undefined> {
+  try {
+    return JSON.parse(await fs.read(pathOf(store, id))) as Item
+  } catch {
+    return undefined
+  }
+}
+
+export async function readItems(store: Store): Promise<Read> {
+  const ids = await storedIds(store)
+  const read = await Promise.all(ids.map(async (id) => ({ id, item: await readItem(store, id) })))
+  return {
+    items: read.flatMap(({ item }) => (item === undefined ? [] : [item])).sort(byQueue),
+    unreadable: read.filter(({ item }) => item === undefined).map(({ id }) => id),
+  }
+}
+
+export function byQueue(a: Item, b: Item): number {
+  return a.queuedAt.localeCompare(b.queuedAt)
+}
+
+async function writeItem(store: Store, item: Item): Promise<Item> {
+  const written = { ...item, updatedAt: new Date().toISOString() }
+  await fs.write(pathOf(store, item.id), `${JSON.stringify(written, null, 2)}\n`)
+  await fs.write(store.changed, `${written.updatedAt} ${item.id}\n`)
+  return written
+}
+
+export async function createItem(store: Store, title: string, build: (id: string) => Item): Promise<Item> {
+  return writeItem(store, build(newId(title, await storedIds(store))))
+}
+
+export async function updateItem(store: Store, id: string, change: (fresh: Item) => Item): Promise<Item> {
+  const fresh = await readItem(store, id)
+  if (fresh === undefined) throw new Error(`The inbox has nothing with the id ${id}. Call read with no id to list what is open.`)
+  return writeItem(store, change(fresh))
 }
 
 export function current(item: Item): Content {
@@ -156,8 +194,4 @@ export function newId(title: string, taken: readonly string[]): string {
   const slug = cut || 'item'
   if (!taken.includes(slug)) return slug
   for (let index = 2; ; index += 1) if (!taken.includes(`${slug}-${index}`)) return `${slug}-${index}`
-}
-
-export function isSameAuthor(a: Author, b: Author): boolean {
-  return a.session === b.session
 }

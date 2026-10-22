@@ -14,6 +14,10 @@ type Shared = {
   readonly onFile: (path: string) => void
 }
 
+function seenOf(item: Item): number {
+  return item.revisions.length - 1
+}
+
 function keyOf(item: Item, path: string): string {
   return `${item.id}:${path}`
 }
@@ -41,7 +45,7 @@ function Correction({ mod, item, path }: { readonly mod: Mod<InboxState>; readon
       placeholder="your words"
       submitLabel="send"
       autoFocus
-      onSubmit={(words) => void answer(mod, item.id, { kind: 'correct', words, target })}
+      onSubmit={(words) => void answer(mod, item.id, seenOf(item), { kind: 'correct', words, target })}
     />
   )
 }
@@ -83,17 +87,17 @@ function Actions({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: 
   const content = current(item)
   const whole = keyOf(item, '')
   const asking = mod.state.memory.correcting === whole
-  const later_ = <Button key="later" hotkey="l" label="Later" onPress={() => void later(mod, item.id)} />
-  const withdraw = <Button key="withdraw" hotkey="w" label="Withdraw" onPress={() => void answer(mod, item.id, { kind: 'withdraw' })} />
+  const later_ = <Button key="later" hotkey="l" label="Later" onPress={() => void later(mod, item.id, seenOf(item))} />
+  const withdraw = <Button key="withdraw" hotkey="w" label="Withdraw" onPress={() => void answer(mod, item.id, seenOf(item), { kind: 'withdraw' })} />
   const open = (kind: 'correct' | 'answer') => <Button key={kind} hotkey={kind === 'correct' ? 'c' : 'a'} label={kind === 'correct' ? 'Correct…' : 'Answer…'} onPress={() => void (mod.state.memory.correcting = whole)} />
   const buttons =
     content.kind === 'question'
       ? [open('answer'), later_, withdraw]
       : content.kind === 'proposal'
-        ? [<Button key="approve" hotkey="a" label="Approve" onPress={() => void answer(mod, item.id, { kind: 'approve' })} />, open('correct'), later_, withdraw]
+        ? [<Button key="approve" hotkey="a" label="Approve" onPress={() => void answer(mod, item.id, seenOf(item), { kind: 'approve' })} />, open('correct'), later_, withdraw]
         : [
             ...content.options.map((option, index) => (
-              <Button key={`option${index}`} hotkey={index < 9 ? `${index + 1}` : undefined} label={`Option ${index + 1}`} onPress={() => void answer(mod, item.id, { kind: 'option', option: option.title })} />
+              <Button key={`option${index}`} hotkey={index < 9 ? `${index + 1}` : undefined} label={`Option ${index + 1}`} onPress={() => void answer(mod, item.id, seenOf(item), { kind: 'option', option: option.title })} />
             )),
             open('correct'),
             later_,
@@ -108,7 +112,7 @@ function Actions({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: 
           placeholder="your words"
           submitLabel="send"
           autoFocus
-          onSubmit={(words) => void answer(mod, item.id, content.kind === 'question' ? { kind: 'answer', words } : { kind: 'correct', words })}
+          onSubmit={(words) => void answer(mod, item.id, seenOf(item), content.kind === 'question' ? { kind: 'answer', words } : { kind: 'correct', words })}
         />
       ) : null}
       <Box gap={1} flexWrap="wrap">
@@ -126,10 +130,10 @@ export function ItemView({ mod, item, position, count, onFile }: { readonly mod:
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
-        <Text bold wrap="wrap">{content.title}</Text>
+        <Text bold wrap="wrap">{`${content.title}${changed.has('title') ? '  · changed' : ''}`}</Text>
         <Text dimColor>{`${item.origin.title} · ${item.kind} · ${position} of ${count}${changed.size > 0 ? ' · changed since you read it' : ''}`}</Text>
       </Box>
-      {content.kind === 'question' ? <Text wrap="wrap">{content.why}</Text> : <Text wrap="wrap">{`Goal: ${content.goal}${changed.has('goal') ? '  · changed' : ''}`}</Text>}
+      {content.kind === 'question' ? <Text wrap="wrap">{`${content.why}${changed.has('why') ? '  · changed' : ''}`}</Text> :<Text wrap="wrap">{`Goal: ${content.goal}${changed.has('goal') ? '  · changed' : ''}`}</Text>}
       {content.kind === 'options' ? (
         <Box flexDirection="column">
           <Text bold wrap="wrap">{`Problem: ${content.problem.title}${changed.has('problem') ? '  · changed' : ''}`}</Text>

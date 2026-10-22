@@ -38,6 +38,7 @@ function question(subscribers: Item['subscribers']): Item {
     answers: [],
     lastRead: -1,
     queuedAt: '2026-10-22T10:00:00.000Z',
+    updatedAt: '2026-10-22T10:00:00.000Z',
     status: 'waiting',
   }
 }
@@ -156,7 +157,7 @@ test('a drawing the code contradicts is refused with every reason, and nothing r
       'The propose tool failed: The inbox refused it, because the code does not match:',
       '- Exhaustive match needs no default › A full match still demands a default › No default: src/missing.ts does not exist, so it cannot be edited.',
       '- Exhaustive match needs no default › A full match still demands a default › No default: src/match.ts declares no compile. It declares check, Case, lower.',
-      '- Exhaustive match needs no default › A full match still demands a default › No default: src/match.ts does not hold the old lines. Copy them from the file as they are now.',
+      '- Exhaustive match needs no default › A full match still demands a default › No default: src/match.ts does not hold the old lines as whole lines. Copy them from the file as they are now.',
     ].join('\n'),
   })
   expect(mod.state.memory.items).toEqual([])
@@ -309,9 +310,66 @@ test('read lists what is open, and gives one item with every answer and the revi
   expect(read.answers.map(({ kind, words, revision }) => ({ kind, words, revision }))).toEqual([{ kind: 'answer', words: 'Yes', revision: 0 }])
 })
 
-test('an item another session wrote shows when the inbox starts', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'planner', title: 'schema planning' }])) } })
+test('an item another session wrote shows when the inbox starts, and an unreadable item file is skipped', async () => {
+  const mod = tested({
+    files: {
+      [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'planner', title: 'schema planning' }])),
+      [`${itemsFolder}/half-written.json`]: '{"id": "half',
+    },
+  })
   await mod.type('/inbox')
 
   expect(await mod.shown.page.lines({ columns: 160 })).toContain('schema planning · question · 1 of 1')
+  expect(mod.shown.debug.some((line) => line.includes('skipped items/half-written.json'))).toBe(true)
+})
+
+test('an answer to a revision another session has replaced is refused, and the item keeps waiting', async () => {
+  const stored = question([{ session: 'planner', title: 'schema planning' }])
+  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(stored) } })
+  await mod.type('/inbox')
+  await mod.shown.page.press('answer')
+  const revisedElsewhere: Item = {
+    ...stored,
+    revisions: [...stored.revisions, { ...stored.origin, at: '2026-10-22T11:00:00.000Z', content: { kind: 'question', title: 'Do we want paid courses?', why: 'It decides the schema' } }],
+    updatedAt: '2026-10-22T11:00:00.000Z',
+  }
+  await mod.fakes.fs.write?.(`${itemsFolder}/courses.json`, JSON.stringify(revisedElsewhere))
+  await mod.shown.page.input('words', 'Yes')
+
+  expect(mod.shown.toasts.at(-1)?.message).toBe('"Do we want paid courses?" was revised while you read it. Read the new revision, then answer.')
+  expect(mod.shown.sent).toEqual([])
+})
+
+test('an answer nobody is running to hear stays with the item, and the person is told', async () => {
+  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'ended', title: 'schema planning' }])) } })
+  await mod.type('/inbox')
+  await mod.shown.page.press('answer')
+  await mod.shown.page.input('words', 'Yes')
+
+  expect(mod.shown.toasts.at(-1)).toEqual({ type: 'warning', message: 'No running session follows "Do we want courses?"', description: 'Your answer is kept with the item, and an agent reads it with the read tool.' })
+  expect(mod.state.memory.items[0]?.status).toBe('answered')
+})
+
+test('old lines that appear twice are refused with both places, and a trailing newline at the end of the file still matches', async () => {
+  const mod = tested({ files: { '/work/src/twice.ts': 'return null\nfoo()\nreturn null\n' } })
+  const withDiff = (old: string) => ({ ...proposal, problems: [{ ...proposal.problems[0], solution: { ...solution, drawings: [{ kind: 'diff', path: 'src/twice.ts', old, new: 'return undefined' }] } }] })
+
+  const twice = await mod.callTool('propose', withDiff('return null'))
+  expect('deny' in twice && twice.deny).toContain('src/twice.ts holds the old lines 2 times, at lines 1, 3. Add the lines around them so they match once.')
+
+  const item = await filed(mod, 'propose', withDiff('foo()\nreturn null\n'))
+  const solved = item.revisions[0]?.content
+  const drawing = solved?.kind === 'proposal' ? solved.problems[0]?.solution?.drawings?.[0] : undefined
+  expect(drawing).toEqual({ kind: 'diff', path: 'src/twice.ts', old: 'foo()\nreturn null', new: 'return undefined', startLine: 2, before: ['return null'], after: [] })
+})
+
+test('a revision that removes a Problem marks the item as changed', async () => {
+  const mod = tested()
+  const two = { ...proposal, problems: [...proposal.problems, { ...proposal.problems[0], title: 'A second Problem' }] }
+  const item = await filed(mod, 'propose', two)
+  await mod.type('/inbox')
+  await mod.shown.page.press('later')
+  await mod.callTool('revise', { id: item.id, proposal })
+
+  expect((await mod.shown.page.lines({ columns: 160 }))[1]).toContain('changed since you read it')
 })

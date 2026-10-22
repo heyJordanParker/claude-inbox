@@ -48,6 +48,8 @@ function everyNode(content: Content): Map<string, string> {
     childrenOf(node).forEach(visit)
   }
   rootsOf(content).forEach(visit)
+  found.set('title', content.title)
+  if (content.kind === 'question') found.set('why', content.why)
   if (content.kind === 'options') found.set('problem', JSON.stringify(content.problem))
   if (content.kind !== 'question') found.set('goal', content.goal)
   return found
@@ -56,7 +58,10 @@ function everyNode(content: Content): Map<string, string> {
 export function changedPaths(before: Content | undefined, now: Content): ReadonlySet<string> {
   if (before === undefined) return new Set()
   const was = everyNode(before)
-  return new Set([...everyNode(now)].filter(([path, own]) => was.get(path) !== own).map(([path]) => path))
+  const is = everyNode(now)
+  const edited = [...is].filter(([path, own]) => was.get(path) !== own).map(([path]) => path)
+  const removed = [...was.keys()].filter((path) => !is.has(path))
+  return new Set([...edited, ...removed])
 }
 
 export function changesInside(changed: ReadonlySet<string>, path: string): boolean {

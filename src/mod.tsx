@@ -15,15 +15,15 @@ export const inbox = defineMod({
     toggle: { title: 'Show or hide the inbox', default: 'meta+i' },
   },
 
-  async setup(mod) {
-    await load(mod)
+  setup(mod) {
+    const loaded = load(mod)
     fs.onChange({ path: storeIn(mod.dataFolder).changed }, () => load(mod))
+    for (const job of inboxTools(loaded)) mod.use(job)
 
     const file = mod.sidebar.add(filePage)
     const page = mod.sidebar.add(inboxPage((current, project, path) => void showFile(current, file, { project, path })))
     mod.widgets.add(waitingWidget(() => void page.open({ focus: true })))
     mod.hotkeys.toggle.onPress(() => page.toggle({ focus: true }))
     mod.use(slashCommand({ name: 'inbox', description: 'Show the inbox: the proposals, options, and questions waiting for you', immediate: true, reply: () => void page.open({ focus: true }) }))
-    for (const job of inboxTools()) mod.use(job)
   },
 })

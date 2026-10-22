@@ -183,7 +183,6 @@ export const schemas = {
       question: defs.question,
     },
     required: ['id'],
-    oneOf: [{ required: ['proposal'] }, { required: ['options'] }, { required: ['question'] }],
     additionalProperties: false,
   },
   withdraw: { type: 'object', properties: { id, reason: line('Why it no longer needs an answer.') }, required: ['id', 'reason'], additionalProperties: false },
