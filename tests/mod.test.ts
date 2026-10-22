@@ -15,8 +15,10 @@ const traced = (argv: readonly string[]) => {
   if (command === 'api')
     return {
       results: [
-        { name: 'check', header: 'export function check(expr: Expr): Type { … }', line: 1 },
-        { name: 'lower', header: 'export function lower(expr: Expr): Node { … }', line: 5 },
+        { name: 'check', kind: 'function', header: 'export function check(expr: Expr): Type { … }', line: 1 },
+        { name: 'Case', kind: 'type', header: 'export type Case = { … }', line: 4 },
+        { name: 'name', kind: 'property', header: 'readonly name: string', line: 4 },
+        { name: 'lower', kind: 'function', header: 'export function lower(expr: Expr): Node { … }', line: 5 },
       ],
     }
   return { results: [{ callers: [{ label: 'compile', source_file: 'src/compiler.ts', source_line: 12 }] }] }
@@ -124,6 +126,8 @@ test('the inbox draws the whole public API of a changed file and the callers of 
   expect(text).toContain('+  export function check(expr: Expr, cases: Case[]): Type   <- takes the cases')
   expect(text).toContain('called by compile (src/compiler.ts:12)')
   expect(text).toContain('lower(expr: Expr): Node')
+  expect(text).toContain('export type Case = { … }')
+  expect(text).not.toContain('readonly name: string')
 })
 
 test('a drawing the code contradicts is refused with every reason, and nothing reaches the inbox', async () => {
@@ -151,7 +155,7 @@ test('a drawing the code contradicts is refused with every reason, and nothing r
     deny: [
       'The propose tool failed: The inbox refused it, because the code does not match:',
       '- Exhaustive match needs no default › A full match still demands a default › No default: src/missing.ts does not exist, so it cannot be edited.',
-      '- Exhaustive match needs no default › A full match still demands a default › No default: src/match.ts declares no compile. It declares check, lower.',
+      '- Exhaustive match needs no default › A full match still demands a default › No default: src/match.ts declares no compile. It declares check, Case, lower.',
       '- Exhaustive match needs no default › A full match still demands a default › No default: src/match.ts does not hold the old lines. Copy them from the file as they are now.',
     ].join('\n'),
   })

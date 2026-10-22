@@ -24,6 +24,8 @@ export type DeclaredContent =
 
 const contextLines = 3
 
+const memberKinds: ReadonlySet<string> = new Set(['property', 'field'])
+
 export async function completeContent(content: DeclaredContent, project: string): Promise<Content> {
   const refusals: string[] = []
   const reader = codeReader(project)
@@ -83,8 +85,8 @@ export function codeReader(project: string): CodeReader {
     exists: (file) => fs.exists(path(file)),
     text: (file) => fs.read(path(file)),
     async declarations(file) {
-      const answer = (await trace(['api', file])) as { results?: readonly { name: string; header: string; line: number }[] }
-      return (answer.results ?? []).map(({ name, header, line }) => ({ name, header, line }))
+      const answer = (await trace(['api', file])) as { results?: readonly { name: string; kind: string; header: string; line: number }[] }
+      return (answer.results ?? []).filter(({ kind }) => !memberKinds.has(kind)).map(({ name, header, line }) => ({ name, header, line }))
     },
     async callers(name) {
       const answer = (await trace(['callers', name, '--limit', '20'])) as {

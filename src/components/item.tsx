@@ -37,7 +37,7 @@ function Correction({ mod, item, path }: { readonly mod: Mod<InboxState>; readon
   return (
     <Input
       key={`words:${key}`}
-      label={`Correct ${target}: `}
+      label={`Correct ${target}`}
       placeholder="your words"
       submitLabel="send"
       autoFocus
@@ -104,7 +104,7 @@ function Actions({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: 
       {asking ? (
         <Input
           key="words"
-          label={content.kind === 'question' ? 'Answer: ' : 'Correct: '}
+          label={content.kind === 'question' ? 'Answer' : 'Correct'}
           placeholder="your words"
           submitLabel="send"
           autoFocus

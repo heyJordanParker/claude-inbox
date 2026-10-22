@@ -2,9 +2,17 @@ import { Note, Prompt, sessions, type Mod, type SessionSend } from '../node_modu
 import { readItems, storeIn, writeItem, type Author, type Item } from './inbox.js'
 import type { InboxState } from './state.js'
 
+const longestLabel = 32
+
+function labelOf(title: string, id: string): string {
+  const line = title.split('\n')[0]?.trim() ?? ''
+  if (line === '') return id
+  return line.length <= longestLabel ? line : `${line.slice(0, longestLabel - 1).trimEnd()}…`
+}
+
 export function author(): Author {
   const { id, title, agentType } = sessions.current
-  return { session: id, title: title || id, ...(agentType === undefined ? {} : { agent: agentType }) }
+  return { session: id, title: labelOf(title, id), ...(agentType === undefined ? {} : { agent: agentType }) }
 }
 
 export async function load(mod: Mod<InboxState>): Promise<void> {
