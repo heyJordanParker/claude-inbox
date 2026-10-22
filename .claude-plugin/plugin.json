@@ -1,0 +1,21 @@
+{
+  "name": "inbox",
+  "displayName": "Inbox",
+  "version": "0.1.0",
+  "description": "One inbox for every proposal, set of options, and question your Claude Code agents bring you, across every session. Agents fill typed fields, the inbox checks them against the code and draws the Architecture, and your answer goes back to every session that follows the item.",
+  "author": {
+    "name": "Jordan Parker",
+    "email": "jordan@parkerlabs.co"
+  },
+  "homepage": "https://github.com/heyJordanParker/claude-inbox",
+  "repository": "https://github.com/heyJordanParker/claude-inbox",
+  "supportUrl": "https://github.com/heyJordanParker/claude-inbox/issues",
+  "license": "MIT",
+  "keywords": ["inbox", "proposals", "review", "agents", "cmod"],
+  "dependencies": [
+    {
+      "name": "cmod",
+      "version": ">=4.0.3"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "inbox",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "cmod": {
+    "permissions": {
+      "run": ["trace"],
+      "conversation": true,
+      "prompt": true
+    },
+    "hotkeys": {
+      "toggle": {
+        "title": "Show or hide the inbox",
+        "default": "meta+i"
+      }
+    }
+  },
+  "dependencies": {
+    "@cmodjs/core": "^4.0.3"
+  }
+}
