@@ -1,54 +1,37 @@
-import type { Mod, Page, PageInit } from '../../node_modules/@cmodjs/core/mod.js'
-import { Box, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
-import { codeReader } from '../drawings.js'
-import type { InboxState } from '../state.js'
+import { fs, messageOf, type Mod, type Page, type PageInit } from '../../node_modules/@cmodjs/core/mod.js'
+import { Box, Code, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
+import { whereLine } from '../items/item.js'
+import type { FileView, InboxState } from '../state.js'
 
-export type FileParams = { readonly project: string; readonly path: string }
-
-function keyOf({ project, path }: FileParams): string {
-  return `${project}::${path}`
-}
-
-export const filePage: PageInit<InboxState, FileParams> = {
+export const filePage: PageInit<InboxState> = {
   id: 'file',
   title: 'File',
-  render: (mod, { params }) => {
-    const view = mod.state.memory.files[keyOf(params)]
+  render: (mod) => {
+    const shown = mod.state.session.file
+    if (shown === null) return <Text dimColor>Press a file in an inbox item to see it here.</Text>
+    const { project, path, view } = shown
     return (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="column">
-          <Text bold>{params.path}</Text>
-          <Text dimColor>{params.project}</Text>
+          <Text bold>{path}</Text>
+          <Text dimColor>{whereLine(project, view.status === 'read' && view.isDiff)}</Text>
         </Box>
-        {view === undefined || view.status === 'loading' ? <Text dimColor>Reading its public API…</Text> : null}
-        {view?.status === 'failed' ? <Text color="error" wrap="wrap">{view.error}</Text> : null}
-        {view?.status === 'ready' ? (
-          view.declarations.length === 0 ? (
-            <Text dimColor>It declares nothing public.</Text>
-          ) : (
-            <Box flexDirection="column" gap={1}>
-              {view.declarations.map((declaration) => (
-                <Box flexDirection="column">
-                  <Text dimColor>{`line ${declaration.line}`}</Text>
-                  <Text wrap="wrap">{declaration.header}</Text>
-                </Box>
-              ))}
-            </Box>
-          )
-        ) : null}
+        {view.status === 'failed' ? <Text color="error" wrap="wrap">{view.error}</Text> : <Code key={`file:${project}:${path}`} source={view.text} path={path} {...(view.isDiff ? { format: 'diff' } : { startLine: 1 })} />}
       </Box>
     )
   },
 }
 
-export async function showFile(mod: Mod<InboxState>, page: Page<FileParams>, params: FileParams): Promise<void> {
-  const key = keyOf(params)
-  mod.state.memory.files = { ...mod.state.memory.files, [key]: { status: 'loading' } }
-  await page.open({ params, focus: true })
+async function viewOf(project: string, path: string, diff: string | undefined): Promise<FileView> {
+  if (diff !== undefined) return { status: 'read', text: diff, isDiff: true }
   try {
-    const declarations = await codeReader(params.project).declarations(params.path)
-    mod.state.memory.files = { ...mod.state.memory.files, [key]: { status: 'ready', declarations } }
+    return { status: 'read', text: await fs.read(`${project}/${path}`), isDiff: false }
   } catch (error) {
-    mod.state.memory.files = { ...mod.state.memory.files, [key]: { status: 'failed', error: error instanceof Error ? error.message : String(error) } }
+    return { status: 'failed', error: `${path} could not be read: ${messageOf(error)}` }
   }
+}
+
+export async function showFile(mod: Mod<InboxState>, page: Page, project: string, path: string, diff: string | undefined): Promise<void> {
+  mod.state.session.file = { project, path, view: await viewOf(project, path, diff) }
+  await page.open({ focus: true })
 }

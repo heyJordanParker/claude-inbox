@@ -1,49 +1,109 @@
-import { Note, Prompt, sessions, type Mod, type SessionSend } from '../node_modules/@cmodjs/core/mod.js'
-import { byQueue, createItem, readItems, storeIn, updateItem, type Author, type Item } from './inbox.js'
+import { fs, messageOf, Note, process, Prompt, sessions, type Mod } from '../node_modules/@cmodjs/core/mod.js'
+import { advanced, marksIn, unheard, type Told } from './items/heard.js'
+import { isInScope, isUnnamed, narrowestScope, personOf, repositoryOf, scopes, senderOf, sendersFor, sendersOf, type Author, type Item, type Person, type Scope, type Sender } from './items/item.js'
+import { createItem, deliveryStart, readerOf, storeIn, updateItem, type Reader, type Reread, type Store } from './items/store.js'
 import type { InboxState } from './state.js'
 
-const longestLabel = 32
-
-function labelOf(title: string, id: string): string {
-  const line = title.split('\n')[0]?.trim() ?? ''
-  if (line === '') return id
-  return line.length <= longestLabel ? line : `${line.slice(0, longestLabel - 1).trimEnd()}…`
+export function author(): Author {
+  const { id, agentType } = sessions.current
+  return { session: id, ...(agentType === undefined ? {} : { agent: agentType }) }
 }
 
-export async function author(): Promise<Author> {
-  const { id, title, agentType } = sessions.current
-  const known = title === '' ? ((await sessions.list({ running: true })).find((session) => session.id === id)?.title ?? '') : title
-  return { session: id, title: labelOf(known, agentType === undefined ? id.slice(0, 8) : `${agentType} ${id.slice(0, 8)}`), ...(agentType === undefined ? {} : { agent: agentType }) }
+export function storeOf(mod: Mod<InboxState>): Store {
+  return storeIn(mod.dataFolder, fs)
 }
 
-function remember(mod: Mod<InboxState>, items: readonly Item[]): void {
+export function remember(mod: Mod<InboxState>, items: readonly Item[]): void {
   const newest = new Map(mod.state.memory.items.map((item) => [item.id, item]))
   for (const item of items) {
     const known = newest.get(item.id)
     if (known === undefined || known.updatedAt <= item.updatedAt) newest.set(item.id, item)
   }
-  mod.state.memory.items = [...newest.values()].sort(byQueue)
+  mod.state.memory.items = [...newest.values()]
 }
 
-const reportedUnreadable = new Set<string>()
+export function rememberPerson(mod: Mod<InboxState>, id: string, person: Person): void {
+  mod.state.memory.person = { ...mod.state.memory.person, [id]: person }
+}
+
+export function personIn(mod: Mod<InboxState>, item: Item): Person {
+  return personOf(mod.state.memory.person, item)
+}
+
+export function senderIn(mod: Mod<InboxState>, item: Item, author: Author): Sender {
+  return senderOf(author, item.project, mod.state.memory.senders)
+}
+
+async function learnRepositories(mod: Mod<InboxState>, projects: readonly string[]): Promise<void> {
+  const known = mod.state.memory.repositories
+  const fresh = [...new Set(projects)].filter((project) => known[project] === undefined)
+  if (fresh.length === 0) return
+  const learned = await Promise.all(fresh.map(async (project) => [project, await repositoryOf(process.run, project, (line) => mod.log(line))] as const))
+  mod.state.memory.repositories = { ...mod.state.memory.repositories, ...Object.fromEntries(learned) }
+}
+
+const learning = new WeakMap<Mod<InboxState>, Promise<void>>()
+
+export function learnSenders(mod: Mod<InboxState>): Promise<void> {
+  const running = learning.get(mod)
+  if (running !== undefined) return running
+  const learned = sessions
+    .list({ everyProject: true })
+    .then((listed) => {
+      mod.state.memory.senders = sendersFor(mod.state.memory.items, sendersOf(listed))
+    })
+    .catch((error: unknown) => mod.log(`could not list the sessions, so items keep the session titles read before: ${messageOf(error)}`))
+    .finally(() => learning.delete(mod))
+  learning.set(mod, learned)
+  return learned
+}
+
+const readers = new WeakMap<Mod<InboxState>, Reader>()
+
+function readerIn(mod: Mod<InboxState>): Reader {
+  const known = readers.get(mod)
+  if (known !== undefined) return known
+  const reader = readerOf(storeOf(mod))
+  readers.set(mod, reader)
+  return reader
+}
+
+async function remembered(mod: Mod<InboxState>, fresh: Reread): Promise<void> {
+  remember(mod, fresh.items)
+  mod.state.memory.items = mod.state.memory.items.filter((item) => !fresh.gone.items.includes(item.id))
+  mod.state.memory.person = Object.fromEntries(Object.entries({ ...mod.state.memory.person, ...fresh.person }).filter(([id]) => !fresh.gone.person.includes(id)))
+  await learnRepositories(mod, [sessions.current.project, ...fresh.items.map((item) => item.project)])
+  if (isUnnamed(mod.state.memory.items, mod.state.memory.senders)) void learnSenders(mod)
+  for (const line of fresh.skipped) mod.log(`skipped ${line}`)
+  void deliver(mod)
+}
 
 export async function load(mod: Mod<InboxState>): Promise<void> {
-  const { items, unreadable } = await readItems(storeIn(mod.dataFolder))
-  remember(mod, items)
-  for (const id of unreadable.filter((each) => !reportedUnreadable.has(each))) {
-    reportedUnreadable.add(id)
-    mod.log(`skipped items/${id}.json, which does not read as an inbox item`)
-  }
+  await remembered(mod, await readerIn(mod).read())
+}
+
+export async function loadAll(mod: Mod<InboxState>): Promise<void> {
+  await remembered(mod, await readerIn(mod).readAll())
+}
+
+export function scoped(mod: Mod<InboxState>, scope: Scope = mod.state.session.scope): Item[] {
+  const { id, project } = sessions.current
+  const repositories = mod.state.memory.repositories
+  return mod.state.memory.items.filter((item) => isInScope(item, scope, { session: id, repository: repositories[project] ?? project }, repositories))
+}
+
+export function widenTo(mod: Mod<InboxState>, id: string): void {
+  mod.state.session.scope = narrowestScope(scopes, mod.state.session.scope, id, (scope) => scoped(mod, scope))
 }
 
 export async function create(mod: Mod<InboxState>, title: string, build: (id: string) => Item): Promise<Item> {
-  const item = await createItem(storeIn(mod.dataFolder), title, build)
+  const item = await createItem(storeOf(mod), title, build)
   remember(mod, [item])
   return item
 }
 
-export async function change(mod: Mod<InboxState>, id: string, update: (fresh: Item) => Item): Promise<Item> {
-  const item = await updateItem(storeIn(mod.dataFolder), id, update)
+export async function change(mod: Mod<InboxState>, id: string, update: (fresh: Item, person: Person) => Item): Promise<Item> {
+  const item = await updateItem(storeOf(mod), id, update)
   remember(mod, [item])
   return item
 }
@@ -54,22 +114,44 @@ export function find(mod: Mod<InboxState>, id: string): Item {
   return item
 }
 
-export async function tell(item: Item, text: string, type: 'prompt' | 'note', except?: Author): Promise<number> {
-  const receivers = item.subscribers.filter((each) => each.session !== except?.session)
-  if (receivers.length === 0) return 0
-  const message: SessionSend = { type: type === 'prompt' ? Prompt : Note, text }
-  const running = receivers.some((each) => each.session !== sessions.current.id) ? await sessions.list({ running: true, everyProject: true }) : []
-  const sent = await Promise.all(
-    receivers.map(async (receiver) => {
-      if (receiver.session === sessions.current.id) {
-        await sessions.current.send(message)
-        return true
-      }
-      const session = running.find((each) => each.id === receiver.session)
-      if (session === undefined) return false
-      await session.send(message)
-      return true
-    }),
-  )
-  return sent.filter(Boolean).length
+export async function runningSessions(): Promise<ReadonlySet<string>> {
+  return new Set([sessions.current.id, ...(await sessions.list({ running: true, everyProject: true })).map((each) => each.id)])
+}
+
+const deliveryStarts = new WeakMap<Mod<InboxState>, string>()
+
+const delivering = new WeakMap<Mod<InboxState>, Set<string>>()
+
+export async function startDelivery(mod: Mod<InboxState>): Promise<void> {
+  deliveryStarts.set(mod, await deliveryStart(storeOf(mod)))
+}
+
+function nextUnheard(mod: Mod<InboxState>, id: string, start: string): Told | undefined {
+  const item = mod.state.memory.items.find((each) => each.id === id)
+  if (item === undefined) return undefined
+  return unheard(item, personIn(mod, item), sessions.current.id, marksIn(mod.state.session.heard, id, start), mod.state.memory.senders)[0]
+}
+
+async function deliverItem(mod: Mod<InboxState>, id: string, sending: Set<string>): Promise<void> {
+  const start = deliveryStarts.get(mod)
+  if (sending.has(id) || start === undefined) return
+  sending.add(id)
+  try {
+    for (let told = nextUnheard(mod, id, start); told !== undefined; told = nextUnheard(mod, id, start)) {
+      const sentTo = sessions.current.id
+      await sessions.current.send({ type: told.kind === 'prompt' ? Prompt : Note, text: told.text })
+      if (sessions.current.id !== sentTo) return
+      mod.state.session.heard = advanced(mod.state.session.heard, id, told, start)
+    }
+  } catch (error) {
+    mod.log(`could not deliver ${id}, so the next load tries again: ${messageOf(error)}`)
+  } finally {
+    sending.delete(id)
+  }
+}
+
+export async function deliver(mod: Mod<InboxState>): Promise<void> {
+  const sending = delivering.get(mod) ?? new Set<string>()
+  delivering.set(mod, sending)
+  await Promise.all(mod.state.memory.items.map((item) => deliverItem(mod, item.id, sending)))
 }

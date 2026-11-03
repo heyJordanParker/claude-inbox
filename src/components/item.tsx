@@ -1,120 +1,469 @@
-import type { RenderElement } from 'claude-code'
+import type { RenderChildren, RenderElement } from 'claude-code'
 import type { Mod } from '../../node_modules/@cmodjs/core/mod.js'
 import { Box, Button, Input, Markdown, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
-import { answer, later } from '../answers.js'
-import { current, type Item } from '../inbox.js'
+import { Tooltip } from '../../node_modules/@cmodjs/core/ui/components.js'
+import { personIn, senderIn } from '../actions.js'
+import { answer, dropNote, setNote, skip } from '../answers.js'
+import { actionsOf, type Action } from '../items/answers.js'
+import { kindOf } from '../items/drawings.js'
+import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, noteOn, notePlaceholder, plural, precedentLine, revisionOf, sentCorrections, unseenOf, wording, type Drawing, type Idea, type Item, type Person, type Sender, type Unseen } from '../items/item.js'
+import { childrenOf, drawingPath, evidenceOf, evidencePath, foldedLine, foldKey, folds, headingOf, ideaPath, ideasOf, isDrawingUnchanged, isLeftOpen, isUnfolded, readingOf, rootGroups, summaryOf, titleOf, unseenAt, withRemoved, type Node, type Part, type Reading } from '../items/tree.js'
 import type { InboxState } from '../state.js'
-import { changedPaths, changesInside, childrenOf, rootsOf, titlePath, type Node } from '../tree.js'
-import { DrawingView, drawingLabel } from './drawing.js'
+import { chip } from './chip.js'
+import { DrawingView, drawingSubject, type OpenFile } from './drawing.js'
 
-type Shared = {
+type Shared = Reading & {
   readonly mod: Mod<InboxState>
-  readonly item: Item
-  readonly changed: ReadonlySet<string>
-  readonly onFile: (path: string) => void
+  readonly onFile: OpenFile
+  readonly drawingColumns: number
 }
 
-function seenOf(item: Item): number {
-  return item.revisions.length - 1
-}
+const frameColumns = 10
+
+const noteRoom = 3
 
 function keyOf(item: Item, path: string): string {
   return `${item.id}:${path}`
 }
 
-function toggle(mod: Mod<InboxState>, key: string): void {
-  const { opened } = mod.state.memory
-  mod.state.memory.opened = opened.includes(key) ? opened.filter((each) => each !== key) : [...opened, key]
+function toggleFold(shared: Shared, path: string, startsFolded = false): void {
+  shared.mod.state.session.folds = { ...shared.mod.state.session.folds, [foldKey(shared.item, path)]: !isUnfolded(shared, path, startsFolded) }
 }
 
-function headline(node: Node): { readonly label: string; readonly summary: string } {
-  if (node.type === 'problem') return { label: `Problem: ${node.problem.title}`, summary: node.problem.summary }
-  if (node.type === 'solution') return { label: `${node.label}: ${node.solution.title}${node.solution.precedent === undefined ? '' : ` (${node.solution.precedent})`}`, summary: node.solution.summary }
-  return { label: drawingLabel(node.drawing), summary: '' }
+function toggleNote(mod: Mod<InboxState>, key: string): void {
+  mod.state.session.editing = mod.state.session.editing === key ? null : key
 }
 
-function Correction({ mod, item, path }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly path: string }): RenderElement {
-  const key = keyOf(item, path)
-  if (mod.state.memory.correcting !== key)
-    return <Button plain dimColor key={`correct:${key}`} label="Correct this" onPress={() => void (mod.state.memory.correcting = key)} />
-  const target = titlePath(current(item), path)
+function NoteReveal({ mod, noteKey, right = 0 }: { readonly mod: Mod<InboxState>; readonly noteKey: string; readonly right?: number }): RenderElement {
   return (
-    <Input
-      key={`words:${key}`}
-      label={`Correct ${target}`}
-      placeholder="your words"
-      submitLabel="send"
-      autoFocus
-      onSubmit={(words) => void answer(mod, item.id, seenOf(item), { kind: 'correct', words, target })}
-    />
+    <Box position="absolute" right={right} top={0} display="none" hover={{ display: 'flex' }}>
+      <Button plain key={`note:${noteKey}`} onPress={() => toggleNote(mod, noteKey)}>
+        <Text color="suggestion">✎</Text>
+      </Button>
+    </Box>
   )
 }
 
-function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shared }): RenderElement {
-  const { mod, item, changed, onFile } = shared
-  const key = keyOf(item, node.path)
-  const isOpen = mod.state.memory.opened.includes(key)
-  const { label, summary } = headline(node)
-  const mark = changed.has(node.path) ? '  · changed' : changesInside(changed, node.path) ? '  · changed inside' : ''
-  const header = `${isOpen ? '▾' : '▸'} ${label}${summary === '' ? '' : ` — ${summary}`}${mark}`
+function Note({ mod, item, path, label = wording.note }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly path: string; readonly label?: string }): RenderElement | null {
+  const key = keyOf(item, path)
+  const note = noteOn(item, personIn(mod, item), path)
+  if (mod.state.session.editing === key)
+    return (
+      <Box flexDirection="column">
+        <Text bold>{label}</Text>
+        <Input
+          key={`words:${key}`}
+          placeholder={notePlaceholder(label)}
+          submitLabel="save"
+          rows={4}
+          autoFocus
+          {...(note === undefined ? {} : { value: note.words })}
+          onSubmit={async (words) => {
+            if (await setNote(mod, item, path, words)) mod.state.session.editing = null
+          }}
+        />
+      </Box>
+    )
+  if (note === undefined) return null
   return (
-    <Box flexDirection="column" key={`node:${key}`}>
-      <Button plain key={`toggle:${key}`} label={header} onPress={() => toggle(mod, key)} />
+    <Button plain key={`edit:${key}`} onPress={() => toggleNote(mod, key)}>
+      <Text color="suggestion">✎ </Text>
+      <Text italic>{note.words}</Text>
+    </Button>
+  )
+}
+
+const sessionColors: Readonly<Record<string, string>> = { red: '#ff6b80', blue: '#5f87ff', green: '#5fd787', yellow: '#ffd75f', purple: '#af87ff', orange: '#ff8700', pink: '#ff87d7', cyan: '#5fd7d7' }
+
+export function sender({ title, color: named }: Sender): RenderElement {
+  const color = named === undefined ? undefined : sessionColors[named]
+  return (
+    <Text bold {...(color === undefined ? {} : { color })}>
+      {title}
+    </Text>
+  )
+}
+
+const listLine = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/
+
+type Segment = { readonly isList: boolean; readonly lines: string[]; readonly isSpaced: boolean }
+
+function segmentsOf(text: string): Segment[] {
+  if (text.includes('```')) return [{ isList: false, lines: [text], isSpaced: false }]
+  const segments: Segment[] = []
+  let isAfterBlank = false
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') {
+      isAfterBlank = true
+      continue
+    }
+    const last = segments.at(-1)
+    const isList = listLine.test(line) || (last?.isList === true && !isAfterBlank && /^\s/.test(line))
+    if (last !== undefined && last.isList === isList && !isAfterBlank) last.lines.push(line)
+    else segments.push({ isList, lines: [line], isSpaced: isAfterBlank && last !== undefined })
+    isAfterBlank = false
+  }
+  return segments
+}
+
+type ListItem = { readonly depth: number; readonly marker: string; readonly text: string }
+
+function listItems(lines: readonly string[]): ListItem[] {
+  const items: { depth: number; marker: string; lines: string[] }[] = []
+  const indents: number[] = []
+  for (const line of lines) {
+    const match = listLine.exec(line)
+    if (match === null) {
+      items.at(-1)?.lines.push(line.trim())
+      continue
+    }
+    const [, space = '', marker = '', text = ''] = match
+    while (indents.length > 0 && (indents.at(-1) ?? 0) > space.length) indents.pop()
+    if (indents.at(-1) !== space.length) indents.push(space.length)
+    items.push({ depth: indents.length - 1, marker: /\d/.test(marker) ? marker : '•', lines: [text] })
+  }
+  return items.map(({ depth, marker, lines: words }) => ({ depth, marker, text: words.join('\n') }))
+}
+
+function Prose({ text, partKey }: { readonly text: string; readonly partKey: string }): RenderElement {
+  return (
+    <Box flexDirection="column">
+      {segmentsOf(text.trim()).map((segment, n) => (
+        <Box key={`segment:${partKey}:${n}`} flexDirection="column" marginTop={segment.isSpaced ? 1 : 0}>
+          {segment.isList ? (
+            listItems(segment.lines).map((each, m) => (
+              <Box key={`item:${partKey}:${n}:${m}`} paddingLeft={each.depth * 2} columnGap={1}>
+                <Text>{each.marker}</Text>
+                <Box flexDirection="column" flexShrink={1}>
+                  <Markdown key={`text:${partKey}:${n}:${m}`} text={each.text} />
+                </Box>
+              </Box>
+            ))
+          ) : (
+            <Markdown key={`text:${partKey}:${n}`} text={segment.lines.join('\n')} />
+          )}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+export function Badge({ unseen }: { readonly unseen: Unseen | 'changed inside' }): RenderElement {
+  return chip(unseen, 'unseen')
+}
+
+function Mark({ shared, path }: { readonly shared: Shared; readonly path: string }): RenderElement | null {
+  const unseen = unseenAt(shared, path)
+  return unseen === undefined ? null : <Badge unseen={unseen} />
+}
+
+function RemovedPart({ part, space }: { readonly part: Part; readonly space: number }): RenderElement {
+  return (
+    <Box flexDirection="column" marginTop={space} paddingRight={noteRoom}>
+      <Box columnGap={1} flexWrap="wrap">
+        {part.kind === 'idea' ? null : chip(part.kind, 'folded')}
+        {chip(wording.removed, 'unseen')}
+      </Box>
+      <Text dimColor strikethrough wrap="wrap">
+        {part.words}
+      </Text>
+    </Box>
+  )
+}
+
+function removedSpaced(space: number): (part: Part) => RenderElement {
+  return (part) => <RemovedPart part={part} space={space} />
+}
+
+function Was({ shared, path }: { readonly shared: Shared; readonly path: string }): RenderElement | null {
+  const was = shared.revised.was.get(path)
+  return was === undefined ? null : (
+    <Text dimColor strikethrough wrap="wrap">
+      {was}
+    </Text>
+  )
+}
+
+type HeadingProps = {
+  readonly shared: Shared
+  readonly path: string
+  readonly label: string
+  readonly title: string
+  readonly summary: string
+  readonly precedent?: string | undefined
+  readonly status?: string | undefined
+}
+
+function Heading({ shared, path, label, title, summary, precedent, status }: HeadingProps): RenderElement {
+  const { mod, item } = shared
+  const key = keyOf(item, path)
+  const isOpen = isUnfolded(shared, path)
+  const labeled = chip(label, isOpen ? 'label' : 'folded')
+  return (
+    <Box key={`heading:${key}`} flexDirection="column" paddingRight={noteRoom}>
+      <Box columnGap={1} flexWrap="wrap">
+        {folds(path) ? (
+          <Button plain key={`fold:${key}`} hover={{ inverse: true }} onPress={() => toggleFold(shared, path)}>
+            {labeled}
+          </Button>
+        ) : (
+          labeled
+        )}
+        {status === undefined ? null : chip(status, 'label')}
+        <Mark shared={shared} path={path} />
+      </Box>
+      <Text bold underline wrap="wrap">
+        {title}
+      </Text>
+      {precedent === undefined ? null : (
+        <Text dimColor wrap="wrap">
+          {precedentLine(precedent)}
+        </Text>
+      )}
+      <Was shared={shared} path={path} />
+      {isOpen ? null : (
+        <Text dimColor wrap="wrap">
+          {foldedLine(shared, path, summary)}
+        </Text>
+      )}
+      <Note mod={mod} item={item} path={path} />
+      <NoteReveal mod={mod} noteKey={key} />
+    </Box>
+  )
+}
+
+function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; readonly path: string; readonly shared: Shared }): RenderElement {
+  const { mod, item } = shared
+  const key = keyOf(item, path)
+  const keyPrefix = `drawing:${key}`
+  const isFile = drawing.kind === 'files'
+  const isOpen = isUnfolded(shared, path, isFile)
+  return (
+    <Box flexDirection="column">
+      <Box key={`panel:${key}`} flexDirection="column" borderStyle="round" borderColor="inactive" hover={{ borderColor: 'text' }}>
+        <Box columnGap={1} backgroundColor="subtle" paddingLeft={1} paddingRight={noteRoom} flexWrap="wrap">
+          <Button plain key={`fold:${key}`} onPress={() => toggleFold(shared, path, isFile)}>
+            {chip(kindOf(drawing), isOpen ? 'label' : 'folded')}
+          </Button>
+          <Mark shared={shared} path={path} />
+          {[...drawingSubject(drawing, item.project, keyPrefix, shared.onFile), ...(!isOpen && isDrawingUnchanged(shared, path) ? [<Text dimColor>{wording.unchanged}</Text>] : [])].flatMap((part, index) => (index === 0 ? [part] : [<Text dimColor>·</Text>, part]))}
+          <NoteReveal mod={mod} noteKey={key} right={1} />
+        </Box>
+        {isOpen ? (
+          <Box flexDirection="column" paddingX={1} paddingY={1}>
+            <DrawingView drawing={drawing} columns={shared.drawingColumns} keyPrefix={keyPrefix} onFile={shared.onFile} />
+          </Box>
+        ) : null}
+      </Box>
+      <Note mod={mod} item={item} path={path} />
+    </Box>
+  )
+}
+
+function Evidence({ node, shared }: { readonly node: Node; readonly shared: Shared }): RenderElement | null {
+  const checks = evidenceOf(node)
+  if (checks.length === 0) return null
+  const { mod, item } = shared
+  const path = evidencePath(node.path)
+  const key = keyOf(item, path)
+  const isOpen = isUnfolded(shared, path)
+  return (
+    <Box key={`evidence:${key}`} flexDirection="column" paddingRight={noteRoom}>
+      <Box columnGap={1} flexWrap="wrap">
+        <Button plain key={`fold:${key}`} hover={{ inverse: true }} onPress={() => toggleFold(shared, path)}>
+          {chip(wording.evidence, isOpen ? 'label' : 'folded')}
+        </Button>
+        <Text dimColor>{plural(checks.length, 'check')}</Text>
+      </Box>
       {isOpen ? (
-        <Box flexDirection="column" marginLeft={2} gap={1}>
-          {node.type === 'problem' ? <Text wrap="wrap">{`Blocks: ${node.problem.impact}`}</Text> : null}
-          {node.type === 'solution' ? <Markdown text={node.solution.idea} /> : null}
-          {node.type === 'solution' ? (
-            <Box flexDirection="column">
-              <Text bold>Capabilities</Text>
-              {node.solution.capabilities.map((capability) => (
-                <Text wrap="wrap">{`• ${capability}`}</Text>
-              ))}
-            </Box>
-          ) : null}
-          {node.type === 'drawing' ? <DrawingView drawing={node.drawing} keyPrefix={`drawing:${key}`} onFile={onFile} /> : null}
-          {childrenOf(node).map((child) => (
-            <NodeView node={child} shared={shared} />
-          ))}
-          <Correction mod={mod} item={item} path={node.path} />
+        <Box flexDirection="column" marginTop={1}>
+          <Prose text={checks.map((check) => `- ${check.trim()}`).join('\n')} partKey={key} />
+        </Box>
+      ) : null}
+      <Note mod={mod} item={item} path={path} />
+      <NoteReveal mod={mod} noteKey={key} />
+    </Box>
+  )
+}
+
+function IdeaView({ idea, path, shared }: { readonly idea: Idea; readonly path: string; readonly shared: Shared }): RenderElement {
+  const { mod, item } = shared
+  const key = keyOf(item, path)
+  return (
+    <Box flexDirection="column">
+      <Box key={`idea:${key}`} flexDirection="column" paddingRight={noteRoom}>
+        <Mark shared={shared} path={path} />
+        <Prose text={idea.idea} partKey={key} />
+        <Was shared={shared} path={path} />
+        <Note mod={mod} item={item} path={path} />
+        <NoteReveal mod={mod} noteKey={key} />
+      </Box>
+      {idea.drawing === undefined ? null : <DrawingPart drawing={idea.drawing} path={drawingPath(path)} shared={shared} />}
+    </Box>
+  )
+}
+
+function Ideas({ ideas, parent, shared }: { readonly ideas: readonly Idea[]; readonly parent: string; readonly shared: Shared }): RenderElement {
+  return (
+    <Box flexDirection="column" gap={1}>
+      {withRemoved(
+        shared,
+        (index) => ideaPath(parent, index),
+        ideas.map((idea, index) => <IdeaView idea={idea} path={ideaPath(parent, index)} shared={shared} />),
+        removedSpaced(0),
+      )}
+    </Box>
+  )
+}
+
+const partSpace = 2
+
+function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shared }): RenderElement {
+  const precedent = node.type === 'solution' ? node.solution.precedent : undefined
+  const status = isLeftOpen(node) ? wording.leftOpen : undefined
+  const children = childrenOf(node)
+  const view = (child: Node) => <NodeView node={child} shared={shared} />
+  return (
+    <Box flexDirection="column" key={`node:${keyOf(shared.item, node.path)}`} marginTop={partSpace}>
+      <Heading shared={shared} path={node.path} label={headingOf(node)} title={titleOf(node)} summary={summaryOf(node)} precedent={precedent} status={status} />
+      {isUnfolded(shared, node.path) ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Box flexDirection="column" gap={1}>
+            {ideasOf(node).length === 0 ? null : <Ideas ideas={ideasOf(node)} parent={node.path} shared={shared} />}
+            {node.type === 'change' && node.change.drawing !== undefined ? <DrawingPart drawing={node.change.drawing} path={drawingPath(node.path)} shared={shared} /> : null}
+            <Evidence node={node} shared={shared} />
+          </Box>
+          {withRemoved(shared, () => `${node.path}.s`, [], removedSpaced(partSpace))}
+          {children.filter((child) => child.type === 'solution').map(view)}
+          {withRemoved(shared, (index) => `${node.path}.p${index}`, children.filter((child) => child.type === 'problem').map(view), removedSpaced(partSpace))}
         </Box>
       ) : null}
     </Box>
   )
 }
 
-function Actions({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: Item }): RenderElement {
-  const content = current(item)
-  const whole = keyOf(item, '')
-  const asking = mod.state.memory.correcting === whole
-  const later_ = <Button key="later" hotkey="l" label="Later" onPress={() => void later(mod, item.id, seenOf(item))} />
-  const withdraw = <Button key="withdraw" hotkey="w" label="Withdraw" onPress={() => void answer(mod, item.id, seenOf(item), { kind: 'withdraw' })} />
-  const open = (kind: 'correct' | 'answer') => <Button key={kind} hotkey={kind === 'correct' ? 'c' : 'a'} label={kind === 'correct' ? 'Correct…' : 'Answer…'} onPress={() => void (mod.state.memory.correcting = whole)} />
-  const buttons =
-    content.kind === 'question'
-      ? [open('answer'), later_, withdraw]
-      : content.kind === 'proposal'
-        ? [<Button key="approve" hotkey="a" label="Approve" onPress={() => void answer(mod, item.id, seenOf(item), { kind: 'approve' })} />, open('correct'), later_, withdraw]
-        : [
-            ...content.options.map((option, index) => (
-              <Button key={`option${index}`} hotkey={index < 9 ? `${index + 1}` : undefined} label={`Option ${index + 1}`} onPress={() => void answer(mod, item.id, seenOf(item), { kind: 'option', option: option.title })} />
-            )),
-            open('correct'),
-            later_,
-            withdraw,
-          ]
+export function Section({ label, mark, children }: { readonly label: string; readonly mark?: RenderChildren; readonly children: RenderChildren }): RenderElement {
+  return (
+    <Box flexDirection="column">
+      <Box columnGap={1} flexWrap="wrap">
+        {chip(label, 'label')}
+        {mark}
+      </Box>
+      {children}
+    </Box>
+  )
+}
+
+function Labeled({ shared, path, label, text, status }: { readonly shared: Shared; readonly path: string; readonly label: string; readonly text: string; readonly status?: RenderElement }): RenderElement {
+  const key = keyOf(shared.item, path)
+  return (
+    <Box key={`lead:${key}`} flexDirection="column" paddingRight={noteRoom}>
+      <Section label={label} mark={[status ?? null, <Mark shared={shared} path={path} />]}>
+        <Prose text={text} partKey={key} />
+        <Was shared={shared} path={path} />
+        <Note mod={shared.mod} item={shared.item} path={path} />
+      </Section>
+      <NoteReveal mod={shared.mod} noteKey={key} />
+    </Box>
+  )
+}
+
+function Lead({ shared }: { readonly shared: Shared }): RenderElement {
+  const content = current(shared.item)
+  if (content.kind === 'question') return <Labeled shared={shared} path="why" label={wording.whyItMatters} text={content.why} />
+  if (content.kind !== 'options') return <Labeled shared={shared} path="goal" label={wording.goal} text={content.goal} />
+  return (
+    <Box flexDirection="column">
+      <Labeled shared={shared} path="goal" label={wording.goal} text={content.goal} />
+      <Box flexDirection="column" marginTop={2}>
+        <Heading shared={shared} path="problem" label={wording.problem} title={content.problem.title} summary={plural(content.problem.ideas.length, 'idea')} />
+        {isUnfolded(shared, 'problem') ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Ideas ideas={content.problem.ideas} parent="problem" shared={shared} />
+          </Box>
+        ) : null}
+      </Box>
+    </Box>
+  )
+}
+
+function Sent({ item, person }: { readonly item: Item; readonly person: Person }): RenderElement | null {
+  if (!isWithAgent(item, person)) return null
+  return (
+    <Section label={wording.sent}>
+      {sentCorrections(item, person).map((correction) => (
+        <Text wrap="wrap">
+          <Text color="suggestion">✎ </Text>
+          <Text italic>{`${correction.target}: ${correction.words}`}</Text>
+        </Text>
+      ))}
+    </Section>
+  )
+}
+
+function Closing({ mod, item, person }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person }): RenderElement | null {
+  const closing = closingOf(item, person)
+  if (closing === undefined) return null
+  return (
+    <Section label={closedLine(closing, Date.now())}>
+      {closingLines(item, closing, mod.state.memory.senders).map((line) => (
+        <Text wrap="wrap">{line}</Text>
+      ))}
+    </Section>
+  )
+}
+
+function EarlierNotes({ mod, item, person }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person }): RenderElement | null {
+  const earlier = earlierNotes(item, person)
+  if (earlier.length === 0) return null
+  return (
+    <Section label={wording.earlierNotes}>
+      <Text dimColor wrap="wrap">
+        {wording.earlierNotesHint}
+      </Text>
+      {earlier.map((note) => (
+        <Button plain key={`drop:${item.id}:${note.revision}:${note.path}`} onPress={() => dropNote(mod, item, note)}>
+          <Text color="suggestion">✎ </Text>
+          <Text italic>{`${note.target}: ${note.words}`}</Text>
+        </Button>
+      ))}
+    </Section>
+  )
+}
+
+function actionButton(action: Action, onPress: () => void | Promise<void>): RenderElement {
+  return (
+    <Button key={action.id} {...(action.hotkey === undefined ? {} : { hotkey: action.hotkey })} onPress={onPress}>
+      <Text {...(action.isPrimary ? { color: 'claude' } : {})}>{action.label}</Text>
+      {action.hotkey === undefined ? null : <Text dimColor>{`  ${action.hotkey}`}</Text>}
+    </Button>
+  )
+}
+
+function Actions({ mod, item, person, next }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person; readonly next: Item | undefined }): RenderElement {
+  const seen = revisionOf(item)
+  const commentKey = keyOf(item, '')
+  const answerKey = keyOf(item, 'answer')
+  const actions = actionsOf(item, person, { hasNext: next !== undefined, isCommenting: mod.state.session.editing === commentKey })
+  const answering = actions.find(({ does }) => does === 'answer')
+  const buttons = actions.map((action) => {
+    const { does } = action
+    if (does === 'answer') return null
+    if (does === 'comment') return actionButton(action, () => toggleNote(mod, commentKey))
+    if (does !== 'skip') return actionButton(action, () => answer(mod, item.id, seen, does))
+    return next === undefined ? null : <Tooltip text={`${kindName(next)}: ${current(next).title}`}>{actionButton(action, () => skip(mod, item, seen, next.id))}</Tooltip>
+  })
   return (
     <Box flexDirection="column" gap={1}>
-      {asking ? (
-        <Input
-          key="words"
-          label={content.kind === 'question' ? 'Answer' : 'Correct'}
-          placeholder="your words"
-          submitLabel="send"
-          autoFocus
-          onSubmit={(words) => void answer(mod, item.id, seenOf(item), content.kind === 'question' ? { kind: 'answer', words } : { kind: 'correct', words })}
-        />
-      ) : null}
+      {answering === undefined ? null : (
+        <Box flexDirection="column" alignItems="flex-start">
+          {actionButton(answering, () => {
+            mod.state.session.editing = answerKey
+          })}
+          <Input key={`answer:${item.id}`} placeholder={wording.answerPlaceholder} submitLabel="send" rows={4} {...(mod.state.session.editing === answerKey ? { autoFocus: true } : {})} onSubmit={(words) => answer(mod, item.id, seen, { kind: 'answer', words })} />
+        </Box>
+      )}
+      <Note mod={mod} item={item} path="" label={wording.comment} />
       <Box gap={1} flexWrap="wrap">
         {buttons}
       </Box>
@@ -122,34 +471,68 @@ function Actions({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: 
   )
 }
 
-export function ItemView({ mod, item, position, count, onFile }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly position: number; readonly count: number; readonly onFile: (path: string) => void }): RenderElement {
-  const content = current(item)
-  const read = item.lastRead < 0 ? undefined : item.revisions[item.lastRead]?.content
-  const changed = item.lastRead === item.revisions.length - 1 ? new Set<string>() : changedPaths(read, content)
-  const shared: Shared = { mod, item, changed, onFile }
+export function Bar({ children }: { readonly children: RenderChildren }): RenderElement {
   return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="column">
-        <Text bold wrap="wrap">{`${content.title}${changed.has('title') ? '  · changed' : ''}`}</Text>
-        <Text dimColor>{`${item.origin.title} · ${item.kind} · ${position} of ${count}${changed.size > 0 ? ' · changed since you read it' : ''}`}</Text>
-      </Box>
-      {content.kind === 'question' ? <Text wrap="wrap">{`${content.why}${changed.has('why') ? '  · changed' : ''}`}</Text> :<Text wrap="wrap">{`Goal: ${content.goal}${changed.has('goal') ? '  · changed' : ''}`}</Text>}
-      {content.kind === 'options' ? (
-        <Box flexDirection="column">
-          <Text bold wrap="wrap">{`Problem: ${content.problem.title}${changed.has('problem') ? '  · changed' : ''}`}</Text>
-          <Text wrap="wrap">{content.problem.summary}</Text>
-          <Text dimColor wrap="wrap">{`Blocks: ${content.problem.impact}`}</Text>
-        </Box>
-      ) : null}
-      {rootsOf(content).length > 0 ? (
-        <Box flexDirection="column">
-          {rootsOf(content).map((node) => (
-            <NodeView node={node} shared={shared} />
-          ))}
-        </Box>
-      ) : null}
-      <Text dimColor wrap="wrap">{`Subscribed: ${item.subscribers.map((each) => each.title).join(', ') || 'nobody'}`}</Text>
-      <Actions mod={mod} item={item} />
+    <Box flexDirection="column" gap={1} backgroundColor="subtle" paddingX={2} paddingY={1}>
+      {children}
     </Box>
+  )
+}
+
+export function Card({ children }: { readonly children: RenderChildren }): RenderElement {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="inactive" width="100%">
+      {children}
+    </Box>
+  )
+}
+
+export function ItemView({ mod, item, place, columns, onFile, onBrowser, next }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly place: string | undefined; readonly columns: number; readonly onFile: OpenFile; readonly onBrowser: () => Promise<void>; readonly next: Item | undefined }): RenderElement {
+  const content = current(item)
+  const person = personIn(mod, item)
+  const shared: Shared = { ...readingOf(item, person, mod.state.session.folds), mod, onFile, drawingColumns: columns - frameColumns }
+  const unseen = unseenOf(item, person)
+  const itemKey = keyOf(item, '')
+  return (
+    <Card>
+      <Box key={`card:${itemKey}`} flexDirection="column" gap={1} backgroundColor="subtle" paddingX={2} paddingY={1}>
+        <Box columnGap={1} flexWrap="wrap">
+          {chip(kindName(item), 'label')}
+          {unseen === undefined ? null : <Badge unseen={unseen} />}
+          <Text>from</Text>
+          {sender(senderIn(mod, item, item.origin))}
+          {place === undefined ? null : <Text>{`· ${place}`}</Text>}
+          <Button key="browser" hotkey="o" onPress={() => void onBrowser()}>
+            <Text color="suggestion">Open in browser</Text>
+            <Text dimColor>{'  o'}</Text>
+          </Button>
+        </Box>
+        <Box flexDirection="column">
+          <Text bold wrap="wrap">
+            {content.title}
+          </Text>
+          <Was shared={shared} path="title" />
+        </Box>
+      </Box>
+      <Box flexDirection="column" paddingX={2} paddingY={1}>
+        <Box flexDirection="column" gap={partSpace}>
+          <Closing mod={mod} item={item} person={person} />
+        <Sent item={item} person={person} />
+          <EarlierNotes mod={mod} item={item} person={person} />
+          <Lead shared={shared} />
+        </Box>
+        {rootGroups(content).flatMap(({ part, nodes }) =>
+          withRemoved(
+            shared,
+            (index) => `${part}${index}`,
+            nodes.map((node) => <NodeView node={node} shared={shared} />),
+            removedSpaced(partSpace),
+          ),
+        )}
+      </Box>
+      <Bar>
+        <Actions mod={mod} item={item} person={person} next={next} />
+      </Bar>
+    </Card>
   )
 }

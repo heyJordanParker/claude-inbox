@@ -1,8 +1,10 @@
 import { sessions, type Job, type Mod, type Tool } from '../node_modules/@cmodjs/core/mod.js'
 import { tool } from '../node_modules/@cmodjs/core/jobs/tool.js'
-import { author, change, create, find, tell } from './actions.js'
-import { completeContent, type DeclaredContent } from './drawings.js'
-import { current, type Item, type Kind } from './inbox.js'
+import { author, change, create, find, learnSenders, load, personIn, senderIn, storeOf } from './actions.js'
+import { completeContent, type DeclaredContent } from './completion.js'
+import { format } from './items/formats.js'
+import { byQueue, current, isUnnamed, revisionNumber, revisionOf, statusOf, type Item, type Kind } from './items/item.js'
+import { itemPath } from './items/store.js'
 import { schemas } from './schemas.js'
 import type { InboxState } from './state.js'
 
@@ -10,121 +12,142 @@ type Input = Record<string, unknown>
 
 type Execute = (input: Input, mod: Mod<InboxState>) => unknown
 
-function inboxTool(loaded: Promise<void>, name: string, description: string, schema: object, execute: Execute): Job<Tool, InboxState> {
-  return tool<{ type: 'object' }, InboxState>({
-    name,
-    description,
-    inputSchema: schema as { type: 'object' },
-    execute: async (input, mod) => {
-      await loaded
-      return execute(input, mod)
-    },
-  })
+const kinds: readonly Kind[] = ['proposal', 'options', 'question', 'report']
+
+function linkOf(mod: Mod<InboxState>, item: Item): string {
+  return `[${current(item).title}](file://${itemPath(storeOf(mod), item.id)})`
 }
 
-const kindWords: Readonly<Record<Kind, string>> = { proposal: 'proposal', options: 'options', question: 'question' }
-
-function isClosed(item: Item): boolean {
-  return item.status === 'answered' || item.status === 'withdrawn'
+function linkLine(mod: Mod<InboxState>, item: Item): string {
+  return `Give the user this link in your reply, which opens it in their Sidebar: ${linkOf(mod, item)}`
 }
 
-async function file(mod: Mod<InboxState>, declared: DeclaredContent): Promise<string> {
-  const project = sessions.current.project
-  const content = await completeContent(declared, project)
-  const by = await author()
-  const now = new Date().toISOString()
-  const item = await create(mod, declared.title, (id) => ({
-    id,
-    kind: declared.kind,
-    project,
-    origin: by,
-    subscribers: [by],
-    revisions: [{ ...by, content, at: now }],
-    answers: [],
-    lastRead: -1,
-    queuedAt: now,
-    updatedAt: now,
-    status: 'waiting',
-  }))
-  return `The inbox holds the ${kindWords[item.kind]} "${declared.title}" as ${item.id}. This session is subscribed, so the answer arrives here as a prompt. Revise it with the revise tool when it is corrected.`
-}
+export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, id: string) => void): Job<Tool, InboxState>[] {
+  const inboxTool = (name: string, description: string, schema: object, execute: Execute): Job<Tool, InboxState> =>
+    tool<{ type: 'object' }, InboxState>({
+      name,
+      description,
+      inputSchema: schema as { type: 'object' },
+      execute: async (input, mod) => {
+        await loaded
+        return execute(input, mod)
+      },
+    })
 
-function summaryOf(item: Item) {
-  const content = current(item)
-  return { id: item.id, kind: item.kind, status: item.status, title: content.title, project: item.project, origin: item.origin.title, subscribers: item.subscribers.map((each) => each.title) }
-}
+  const file = async (mod: Mod<InboxState>, kind: Kind, input: Input): Promise<string> => {
+    const { project: given, ...fields } = input
+    const project = typeof given === 'string' ? given.replace(/\/+$/, '') : sessions.current.project
+    const declared = { kind, ...fields } as DeclaredContent
+    const content = await completeContent(declared, project)
+    const by = author()
+    const now = new Date().toISOString()
+    const item = await create(mod, declared.title, (id) => ({
+      format,
+      id,
+      kind: declared.kind,
+      project,
+      origin: by,
+      subscribers: [{ ...by, since: now }],
+      revisions: [{ ...by, content, at: now }],
+      updatedAt: now,
+    }))
+    shown(mod, item.id)
+    return `The inbox holds the ${item.kind} "${declared.title}" as ${item.id}, and shows it to the user. This session is subscribed, so the answer arrives here as a prompt. ${linkLine(mod, item)}`
+  }
 
-export function inboxTools(loaded: Promise<void>): Job<Tool, InboxState>[] {
   return [
     inboxTool(
-      loaded,
       'propose',
-      'Put a proposal in the inbox: the Problems that block a goal, biggest first, each with the one Solution you would ship. The person approves it or corrects it. Declare the Architecture each Solution changes as drawings, and the inbox draws it from the code.',
+      'Put a proposal in the inbox: the Problems that block a goal, biggest first, each with the one Solution you would ship. The user approves it, rejects it, or requests changes. Read the proposals Skill first: each idea carries the drawing that shows it, and the inbox draws the files, API, and data from the code.',
       schemas.propose,
-      (input, mod) => file(mod, { kind: 'proposal', ...input } as DeclaredContent),
+      (input, mod) => file(mod, 'proposal', input),
     ),
     inboxTool(
-      loaded,
       'propose_options',
-      'Put a choice in the inbox: one Problem and two or more specific, good Solutions, and the person picks one. Use it only when each option is one you would ship and only the person can choose between them.',
+      'Put a choice in the inbox: one Problem and two or more specific, good Solutions, and the user picks one or rejects every option. Use it only when each option is one you would ship and only the user can choose between them.',
       schemas.propose_options,
-      (input, mod) => file(mod, { kind: 'options', ...input } as DeclaredContent),
+      (input, mod) => file(mod, 'options', input),
     ),
     inboxTool(
-      loaded,
       'ask_question',
       'Put one product or Capability question in the inbox, when it comes up. Never a technical question: those are yours to answer.',
       schemas.ask_question,
-      (input, mod) => file(mod, { kind: 'question', ...input } as DeclaredContent),
+      (input, mod) => file(mod, 'question', input),
     ),
     inboxTool(
-      loaded,
+      'report',
+      'Put a report in the inbox when work is done: each thing that changed for the user with how you know it works, and the Problems left open. The user marks it done or requests changes. Read the proposals Skill first.',
+      schemas.report,
+      (input, mod) => file(mod, 'report', input),
+    ),
+    inboxTool(
       'revise',
-      'Replace what an inbox item says with a new revision, after a correction or when you learn more. Any session may revise any open item. Give the whole item again, under the key of the kind it was filed as: proposal, options, or question.',
+      'Replace what an open proposal, choice, or question says with a new revision, after a correction or when you learn more. A report is final: file a new report for the next round of work. Any session may revise any open item, and revising subscribes this session to it. Give the whole item again, under the key of the kind it was filed as: proposal, options, question, or report.',
       schemas.revise,
       async (input, mod) => {
         const known = find(mod, input['id'] as string)
-        const kinds = (['proposal', 'options', 'question'] as const).filter((each) => input[each] !== undefined)
-        if (kinds.length !== 1 || kinds[0] !== known.kind) throw new Error(`${known.id} is a ${kindWords[known.kind]}, so give exactly one key, ${known.kind}, with the whole item.`)
+        if (known.kind === 'report') throw new Error(`${known.id} is a report, and a report is final. File a new report for the next round of work.`)
+        const given = kinds.filter((each) => input[each] !== undefined)
+        if (given.length !== 1 || given[0] !== known.kind) throw new Error(`${known.id} was filed as ${known.kind}, so give exactly one key, ${known.kind}, with the whole item.`)
         const content = await completeContent({ kind: known.kind, ...(input[known.kind] as object) } as DeclaredContent, known.project)
-        const by = await author()
-        const revised = await change(mod, known.id, (fresh) => {
-          if (isClosed(fresh)) throw new Error(`${fresh.id} is ${fresh.status}. Put a new item in the inbox instead.`)
-          return { ...fresh, revisions: [...fresh.revisions, { ...by, content, at: new Date().toISOString() }], status: 'waiting' }
+        const by = author()
+        const revised = await change(mod, known.id, (fresh, person) => {
+          const status = statusOf(fresh, person)
+          if (status !== 'open') throw new Error(`${fresh.id} is ${status}. Put a new item in the inbox instead.`)
+          if (JSON.stringify(content) === JSON.stringify(current(fresh))) throw new Error(`${fresh.id} already says exactly this as revision ${revisionNumber(revisionOf(fresh))}. Change what it says before you revise it, or leave it as it is, and it keeps waiting for the user.`)
+          const at = new Date().toISOString()
+          const subscribers = fresh.subscribers.some((each) => each.session === by.session) ? fresh.subscribers : [...fresh.subscribers, { ...by, since: at }]
+          return { ...fresh, subscribers, revisions: [...fresh.revisions, { ...by, content, at }] }
         })
-        await tell(revised, `${by.title} revised "${content.title}" (${revised.id}) in the inbox.`, 'note', by)
-        return `Revised ${revised.id}. It waits for the person again.`
+        shown(mod, revised.id)
+        return `Revised ${revised.id} to revision ${revisionNumber(revisionOf(revised))}, and the inbox shows it to the user. ${linkLine(mod, revised)}`
       },
     ),
-    inboxTool(loaded, 'withdraw', 'Take an item out of the inbox because it no longer needs an answer.', schemas.withdraw, async (input, mod) => {
-      const by = await author()
+    inboxTool('withdraw', 'Take an item out of the inbox because it no longer needs an answer.', schemas.withdraw, async (input, mod) => {
+      const by = author()
       const reason = input['reason'] as string
-      const withdrawn = await change(mod, input['id'] as string, (fresh) => {
-        if (isClosed(fresh)) throw new Error(`${fresh.id} is already ${fresh.status}.`)
-        return { ...fresh, status: 'withdrawn', answers: [...fresh.answers, { kind: 'withdraw', words: reason, revision: fresh.revisions.length - 1, by, at: new Date().toISOString() }] }
+      const withdrawn = await change(mod, input['id'] as string, (fresh, person) => {
+        const status = statusOf(fresh, person)
+        if (status !== 'open') throw new Error(`${fresh.id} is already ${status}.`)
+        return { ...fresh, withdrawal: { kind: 'withdraw', words: reason, revision: revisionOf(fresh), by, at: new Date().toISOString() } }
       })
-      await tell(withdrawn, `${by.title} withdrew "${current(withdrawn).title}" (${withdrawn.id}) from the inbox: ${reason}`, 'note', by)
       return `Withdrew ${withdrawn.id}.`
     }),
-    inboxTool(loaded, 'subscribe', 'Hear every change to an inbox item in this session: each revision, the answer, and a withdrawal.', schemas.subscribe, async (input, mod) => {
-      const by = await author()
+    inboxTool('subscribe', 'Hear every change to an inbox item in this session: each revision, the answer, and a withdrawal.', schemas.subscribe, async (input, mod) => {
+      const by = author()
       let isNew = false
       const item = await change(mod, input['id'] as string, (fresh) => {
         isNew = !fresh.subscribers.some((each) => each.session === by.session)
-        return isNew ? { ...fresh, subscribers: [...fresh.subscribers, by] } : fresh
+        return isNew ? { ...fresh, subscribers: [...fresh.subscribers, { ...by, since: new Date().toISOString() }] } : fresh
       })
       return isNew ? `This session now hears every change to ${item.id}.` : `This session already hears ${item.id}.`
     }),
-    inboxTool(loaded, 'unsubscribe', 'Stop hearing changes to an inbox item in this session.', schemas.unsubscribe, async (input, mod) => {
-      const by = await author()
+    inboxTool('unsubscribe', 'Stop hearing changes to an inbox item in this session.', schemas.unsubscribe, async (input, mod) => {
+      const by = author()
       const item = await change(mod, input['id'] as string, (fresh) => ({ ...fresh, subscribers: fresh.subscribers.filter((each) => each.session !== by.session) }))
       return `This session no longer hears ${item.id}.`
     }),
-    inboxTool(loaded, 'read', "Read one inbox item, with every answer the person gave and the revision each answers, or list every open item when you give no id. An answer is the person's call with that revision in front of them, not a rule for later items.", schemas.read, (input, mod) => {
+    inboxTool('read', "Read one inbox item, with every answer the user gave and the revision each answers, or list every open item when you give no id. An answer is the user's call with that revision in front of them, not a rule for later items.", schemas.read, async (input, mod) => {
+      await load(mod)
+      if (isUnnamed(mod.state.memory.items, mod.state.memory.senders)) await learnSenders(mod)
       const id = input['id'] as string | undefined
-      if (id === undefined) return mod.state.memory.items.filter((each) => !isClosed(each)).map(summaryOf)
+      if (id === undefined)
+        return mod.state.memory.items
+          .filter((item) => statusOf(item, personIn(mod, item)) === 'open')
+          .sort(byQueue(mod.state.memory.person))
+          .map((item) => summaryOf(mod, item))
       const item = find(mod, id)
-      return { ...summaryOf(item), revision: item.revisions.length - 1, content: current(item), answers: item.answers }
+      const closings = [...personIn(mod, item).answers, ...(item.withdrawal === undefined ? [] : [item.withdrawal])].sort((a, b) => a.at.localeCompare(b.at))
+      const answers = closings.map((closing) => ({ ...numbered(closing), ...('corrections' in closing && closing.corrections !== undefined ? { corrections: closing.corrections.map(numbered) } : {}) }))
+      return { ...summaryOf(mod, item), revision: revisionNumber(revisionOf(item)), content: current(item), answers }
     }),
   ]
+}
+
+function numbered<Each extends { readonly revision: number }>(each: Each): Each {
+  return { ...each, revision: revisionNumber(each.revision) }
+}
+
+function summaryOf(mod: Mod<InboxState>, item: Item) {
+  return { id: item.id, kind: item.kind, status: statusOf(item, personIn(mod, item)), title: current(item).title, project: item.project, origin: senderIn(mod, item, item.origin).title, subscribers: item.subscribers.map((each) => senderIn(mod, item, each).title), link: linkOf(mod, item) }
 }

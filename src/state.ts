@@ -1,17 +1,32 @@
-import type { Declaration, Item } from './inbox.js'
+import type { Heard } from './items/heard.js'
+import type { Item, Note, PersonFiles, Scope, Senders } from './items/item.js'
 
-export type FileView = { readonly status: 'loading' } | { readonly status: 'ready'; readonly declarations: readonly Declaration[] } | { readonly status: 'failed'; readonly error: string }
+export type FileView = { readonly status: 'read'; readonly text: string; readonly isDiff: boolean } | { readonly status: 'failed'; readonly error: string }
+
+export type ShownFile = { readonly project: string; readonly path: string; readonly view: FileView }
 
 export type InboxState = {
   memory: {
     items: readonly Item[]
+    person: PersonFiles
+    repositories: Readonly<Record<string, string>>
+    senders: Senders
+  }
+  session: {
+    scope: Scope
     viewing: string | null
-    opened: readonly string[]
-    correcting: string | null
-    files: Readonly<Record<string, FileView>>
+    folds: Readonly<Record<string, boolean>>
+    editing: string | null
+    file: ShownFile | null
+    heard: Heard
+  }
+  global: {
+    notes: Readonly<Record<string, readonly Note[]>>
   }
 }
 
 export const initialState: InboxState = {
-  memory: { items: [], viewing: null, opened: [], correcting: null, files: {} },
+  memory: { items: [], person: {}, repositories: {}, senders: {} },
+  session: { scope: 'session', viewing: null, folds: {}, editing: null, file: null, heard: {} },
+  global: { notes: {} },
 }
