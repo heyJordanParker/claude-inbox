@@ -4,11 +4,13 @@ import { renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import plugin from '../../.claude-plugin/plugin.json'
 import { repositoryOf } from '../../src/items/item.js'
 import { savedServer, serverPath, storeIn, type Server } from '../../src/items/store.js'
-import { runningSessions, sessionSenders } from './cmod.js'
+import { sessionSenders } from './cmod.js'
 import { disk, run } from './disk.js'
 import { serve, type Options, type Serving } from './server.js'
 
 const usage = 'Usage: inbox serve --data <folder>\n       inbox --version'
+
+const programCheckMs = 1000
 
 function save(path: string, saved: Server): void {
   const partial = `${path}.${process.pid}.tmp`
@@ -45,7 +47,6 @@ async function start(folder: string): Promise<Serving> {
   const options: Omit<Options, 'port'> = {
     store,
     token: saved?.token ?? randomBytes(32).toString('base64url'),
-    runningSessions,
     senders: sessionSenders,
     repositoryOf: (project) => repositoryOf(run, project, (line) => console.error(`inbox serve: ${line}`)),
   }
@@ -63,8 +64,28 @@ const serving = await start(data).catch((error: unknown) => {
 })
 console.log(`127.0.0.1:${serving.port}`)
 
-for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) {
-  process.on(signal, () => {
-    void serving.stop().then(() => process.exit(0))
-  })
+function stopServing(): void {
+  void serving.stop().then(() => process.exit(0))
+}
+
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, stopServing)
+
+function identityOf(path: string): string {
+  const found = statSync(path, { throwIfNoEntry: false })
+  return found === undefined ? 'missing' : `${found.ino}:${found.size}:${found.mtimeMs}`
+}
+
+if (Bun.main.startsWith('/$bunfs/')) {
+  const startedAs = process.argv0.includes('/') ? process.argv0 : process.execPath
+  const started = identityOf(startedAs)
+  let checked = started
+  const checking = setInterval(() => {
+    const now = identityOf(startedAs)
+    if (now !== started && now === checked) {
+      clearInterval(checking)
+      console.error(`inbox serve: ${startedAs} changed, so this copy stops and cmod starts the new one.`)
+      stopServing()
+    }
+    checked = now
+  }, programCheckMs)
 }

@@ -9,9 +9,3 @@ export async function sessionSenders(): Promise<Senders> {
   if (exitCode !== 0) throw new Error(`${cmod} history sessions --all --json exited with ${exitCode}, so the inbox cannot name the sessions.`)
   return sendersOf(JSON.parse(stdout) as Parameters<typeof sendersOf>[0])
 }
-
-export async function runningSessions(): Promise<ReadonlySet<string>> {
-  const { exitCode, stdout } = await run([cmod, 'history', 'sessions', '--running', '--all', '--json'])
-  if (exitCode !== 0) throw new Error(`${cmod} history sessions --running --all --json exited with ${exitCode}, so the inbox cannot tell which sessions run.`)
-  return new Set((JSON.parse(stdout) as readonly { readonly id: string }[]).map(({ id }) => id))
-}

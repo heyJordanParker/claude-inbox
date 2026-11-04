@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, setSystemTime, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createElement } from 'react'
@@ -8,6 +8,7 @@ import Markdown from 'react-markdown'
 import { setNote } from '../../src/items/answers.js'
 import { format } from '../../src/items/formats.js'
 import type { Content, Item, Person, PersonFiles, Senders } from '../../src/items/item.js'
+import { parsePerson } from '../../src/items/markdown.js'
 import { createItem, itemPath, personPath, storeIn, updateItem, type Changed, type Disk, type Store } from '../../src/items/store.js'
 import plugin from '../../.claude-plugin/plugin.json'
 import { buildApp, built } from '../build.ts'
@@ -63,7 +64,7 @@ function itemOf(content: Content, project: string, id: string): Item {
 
 let titles: Senders = { planner: { title: 'schema planning', color: 'purple' } }
 
-async function started(running: readonly string[] | Error = ['planner'], served: Disk = disk) {
+async function started({ senders = async () => titles, served = disk }: { readonly senders?: () => Promise<Senders>; readonly served?: Disk } = {}) {
   const root = folder()
   const project = join(root, 'project')
   mkdirSync(join(project, 'src'), { recursive: true })
@@ -73,12 +74,7 @@ async function started(running: readonly string[] | Error = ['planner'], served:
   symlinkSync(join(root, 'secret.txt'), join(project, 'src/escape.ts'))
   const store = storeIn(join(root, 'data'), disk)
   const item = await createItem(store, proposal.title, (id) => itemOf(proposal, project, id))
-  const serving: Serving = await serve({ store: storeIn(store.folder, served), port: 0, token, runningSessions: async () => {
-      if (running instanceof Error) throw running
-      return new Set(running)
-    },
-    senders: async () => titles,
-    repositoryOf: async (each) => `${each}/.git` })
+  const serving: Serving = await serve({ store: storeIn(store.folder, served), port: 0, token, senders, repositoryOf: async (each) => `${each}/.git` })
   cleanups.push(() => serving.stop())
   const address = `127.0.0.1:${serving.port}`
   const call = (path: string, init: { readonly method?: string; readonly body?: unknown; readonly headers?: Record<string, string> } = {}) =>
@@ -87,7 +83,7 @@ async function started(running: readonly string[] | Error = ['planner'], served:
 }
 
 function personFile(store: Store, id: string): Person {
-  return JSON.parse(readFileSync(personPath(store, id), 'utf8')) as Person
+  return parsePerson(id, readFileSync(personPath(store, id), 'utf8'))
 }
 
 async function watched(call: (path: string) => Promise<Response>) {
@@ -247,6 +243,25 @@ test("every frame names each item's sessions by the title cmod lists now, and a 
   await new Promise((resolve) => setTimeout(resolve, 100))
 })
 
+test('every frame says whether each session runs, so a session that stops moves its items to the Archive in the tabs on the 30 second reread', async () => {
+  jest.useFakeTimers()
+  cleanups.push(() => {
+    jest.useRealTimers()
+    titles = { planner: { title: 'schema planning', color: 'purple' } }
+  })
+  titles = { planner: { title: 'schema planning', color: 'purple', isRunning: true } }
+  const { call } = await started()
+  const heard = await watched(call)
+  await heard('"senders":{"planner":{"title":"schema planning","color":"purple","isRunning":true}}')
+
+  titles = { planner: { title: 'schema planning', color: 'purple', isRunning: false } }
+  jest.advanceTimersByTime(30_000)
+  jest.useRealTimers()
+
+  await heard('event: changed\ndata: {"items":[],"person":{},"gone":{"items":[],"person":[]},"senders":{"planner":{"title":"schema planning","color":"purple","isRunning":false}}}')
+  await new Promise((resolve) => setTimeout(resolve, 100))
+})
+
 test('GET /api/items is no route, since the stream carries the listing', async () => {
   const { call } = await started()
 
@@ -271,8 +286,9 @@ test('an Approve through the API stores the answer core.answer stores, with the 
   expect(await again.json()).toEqual({ error: `"${proposal.title}" was answered while you read it.` })
 })
 
-test('an answer says no running session follows the item when its subscribers all stopped, and a bad body or stale revision is refused', async () => {
-  const { item, call } = await started([])
+test('an answer says no running session follows the item when the sessions the tabs read say its subscribers all stopped, and a bad body or stale revision is refused', async () => {
+  const { item, call } = await started({ senders: async () => ({ planner: { title: 'schema planning', isRunning: false } }) })
+  await (await watched(call))('"isRunning":false')
 
   const stale = await call(`/api/items/${item.id}/answer`, { method: 'POST', body: { seen: 3, kind: 'approve' } })
   const unknown = await call(`/api/items/${item.id}/answer`, { method: 'POST', body: { seen: 0, kind: 'shrug' } })
@@ -305,8 +321,8 @@ test('Request changes with no note, and an answer the item does not offer, are r
   expect(statSync(personPath(store, item.id), { throwIfNoEntry: false })).toBeUndefined()
 })
 
-test('an answer is recorded and warns of no stopped session when cmod cannot list the running sessions, so the tab never shows an error for an answer it recorded', async () => {
-  const { store, item, call } = await started(new Error('cmod history sessions failed'))
+test('an answer is recorded and warns of no stopped session when cmod cannot list the sessions, so the tab never shows an error for an answer it recorded', async () => {
+  const { store, item, call } = await started({ senders: () => Promise.reject(new Error('cmod history sessions failed')) })
 
   const approved = await call(`/api/items/${item.id}/answer`, { method: 'POST', body: { seen: 0, kind: 'approve' } })
   const body = (await approved.json()) as { person: Person; isFollowed: boolean }
@@ -498,7 +514,7 @@ test('a reread that fails is tried again on the next poll, so the change still r
       throw new Error('The disk did not answer')
     },
   }
-  const { store, item, call } = await started(['planner'], failingOnce)
+  const { store, item, call } = await started({ served: failingOnce })
   const heard = await watched(call)
   await heard('event: listed')
 
@@ -617,3 +633,50 @@ test('inbox --version prints the version in .claude-plugin/plugin.json and exits
   expect(await new Response(child.stdout).text()).toBe(`${plugin.version}\n`)
   expect(await child.exited).toBe(0)
 })
+
+async function linkedProgram() {
+  const bin = folder()
+  const build = join(bin, '0.2.0', 'inbox')
+  const link = join(bin, 'inbox')
+  const compiled = Bun.spawn([process.execPath, 'build', '--compile', main, '--outfile', build], { cwd: bin, stdout: 'ignore', stderr: 'pipe' })
+  expect(await compiled.exited).toBe(0)
+  symlinkSync(build, link)
+  const child = Bun.spawn([link, 'serve', '--data', folder()], { stdout: 'pipe', stderr: 'pipe' })
+  cleanups.push(async () => {
+    child.kill()
+    await child.exited
+  })
+  const address = await firstLine(child.stdout)
+  await Bun.sleep(3000)
+  const served = await fetch(`http://${address}/`)
+  return { bin, build, link, child, isServing: served.status === 200 && child.exitCode === null }
+}
+
+test('the compiled inbox serve keeps serving while the program it was started as stays the same, and exits 0 once cmod link renames a new build of the same version onto it, so cmod starts the new build', async () => {
+  const { build, link, child, isServing } = await linkedProgram()
+  copyFileSync(build, `${build}.1.tmp`)
+  renameSync(`${build}.1.tmp`, build)
+  const replacedAt = Date.now()
+  const exitCode = await child.exited
+
+  expect(isServing).toBe(true)
+  expect(exitCode).toBe(0)
+  expect(Date.now() - replacedAt).toBeLessThan(4000)
+  expect(await new Response(child.stderr).text()).toContain(`${link} changed, so this copy stops`)
+}, 60_000)
+
+test('the compiled inbox serve exits 0 once its link moves to a new version, although the build it runs stays in place', async () => {
+  const { bin, build, link, child, isServing } = await linkedProgram()
+  const newer = join(bin, '0.3.0', 'inbox')
+  mkdirSync(join(bin, '0.3.0'))
+  copyFileSync(build, newer)
+  symlinkSync(newer, `${link}.1.tmp`)
+  renameSync(`${link}.1.tmp`, link)
+  const movedAt = Date.now()
+  const exitCode = await child.exited
+
+  expect(isServing).toBe(true)
+  expect(statSync(build).isFile()).toBe(true)
+  expect(exitCode).toBe(0)
+  expect(Date.now() - movedAt).toBeLessThan(4000)
+}, 60_000)

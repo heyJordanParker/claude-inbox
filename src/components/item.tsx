@@ -1,9 +1,9 @@
 import type { RenderChildren, RenderElement } from 'claude-code'
-import type { Mod } from '../../node_modules/@cmodjs/core/mod.js'
+import type { Mod, Page } from '../../node_modules/@cmodjs/core/mod.js'
 import { Box, Button, Input, Markdown, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
 import { Tooltip } from '../../node_modules/@cmodjs/core/ui/components.js'
 import { personIn, senderIn } from '../actions.js'
-import { answer, dropNote, setNote, skip } from '../answers.js'
+import { answer, answerInputKey, dropNote, noteInputKey, setEditing, setNote, setTyped, skip } from '../answers.js'
 import { actionsOf, type Action } from '../items/answers.js'
 import { kindOf } from '../items/drawings.js'
 import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, noteOn, notePlaceholder, plural, precedentLine, revisionOf, sentCorrections, unseenOf, wording, type Drawing, type Idea, type Item, type Person, type Sender, type Unseen } from '../items/item.js'
@@ -15,6 +15,7 @@ import { DrawingView, drawingSubject, type OpenFile } from './drawing.js'
 type Shared = Reading & {
   readonly mod: Mod<InboxState>
   readonly onFile: OpenFile
+  readonly focus: Page['focus']
   readonly drawingColumns: number
 }
 
@@ -30,43 +31,53 @@ function toggleFold(shared: Shared, path: string, startsFolded = false): void {
   shared.mod.state.session.folds = { ...shared.mod.state.session.folds, [foldKey(shared.item, path)]: !isUnfolded(shared, path, startsFolded) }
 }
 
-function toggleNote(mod: Mod<InboxState>, key: string): void {
-  mod.state.session.editing = mod.state.session.editing === key ? null : key
+async function toggleNote(shared: Shared, key: string): Promise<void> {
+  const opened = shared.mod.state.session.editing === key ? null : key
+  setEditing(shared.mod, opened)
+  if (opened !== null) await shared.focus(noteInputKey(opened))
 }
 
-function NoteReveal({ mod, noteKey, right = 0 }: { readonly mod: Mod<InboxState>; readonly noteKey: string; readonly right?: number }): RenderElement {
+function Typed({ text }: { readonly text: string | undefined }): RenderElement | null {
+  return text === undefined || text === '' ? null : <Text wrap="wrap">{text}</Text>
+}
+
+function NoteReveal({ shared, noteKey, right = 0 }: { readonly shared: Shared; readonly noteKey: string; readonly right?: number }): RenderElement {
   return (
     <Box position="absolute" right={right} top={0} display="none" hover={{ display: 'flex' }}>
-      <Button plain key={`note:${noteKey}`} onPress={() => toggleNote(mod, noteKey)}>
+      <Button plain key={`note:${noteKey}`} onPress={() => toggleNote(shared, noteKey)}>
         <Text color="suggestion">✎</Text>
       </Button>
     </Box>
   )
 }
 
-function Note({ mod, item, path, label = wording.note }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly path: string; readonly label?: string }): RenderElement | null {
+function Note({ shared, path, label = wording.note }: { readonly shared: Shared; readonly path: string; readonly label?: string }): RenderElement | null {
+  const { mod, item, person } = shared
   const key = keyOf(item, path)
-  const note = noteOn(item, personIn(mod, item), path)
-  if (mod.state.session.editing === key)
+  const note = noteOn(item, person, path)
+  if (mod.state.session.editing === key) {
+    const inputKey = noteInputKey(key)
     return (
       <Box flexDirection="column">
         <Text bold>{label}</Text>
+        <Typed text={mod.state.session.typed[inputKey] ?? note?.words} />
         <Input
-          key={`words:${key}`}
+          key={inputKey}
           placeholder={notePlaceholder(label)}
           submitLabel="save"
           rows={4}
-          autoFocus
           {...(note === undefined ? {} : { value: note.words })}
+          onInput={(words) => setTyped(mod, inputKey, words)}
           onSubmit={async (words) => {
-            if (await setNote(mod, item, path, words)) mod.state.session.editing = null
+            if (await setNote(mod, item, path, words)) setEditing(mod, null)
           }}
         />
       </Box>
     )
+  }
   if (note === undefined) return null
   return (
-    <Button plain key={`edit:${key}`} onPress={() => toggleNote(mod, key)}>
+    <Button plain key={`edit:${key}`} onPress={() => toggleNote(shared, key)}>
       <Text color="suggestion">✎ </Text>
       <Text italic>{note.words}</Text>
     </Button>
@@ -148,7 +159,7 @@ function Prose({ text, partKey }: { readonly text: string; readonly partKey: str
   )
 }
 
-export function Badge({ unseen }: { readonly unseen: Unseen | 'changed inside' }): RenderElement {
+function Badge({ unseen }: { readonly unseen: Unseen | 'changed inside' }): RenderElement {
   return chip(unseen, 'unseen')
 }
 
@@ -195,7 +206,7 @@ type HeadingProps = {
 }
 
 function Heading({ shared, path, label, title, summary, precedent, status }: HeadingProps): RenderElement {
-  const { mod, item } = shared
+  const { item } = shared
   const key = keyOf(item, path)
   const isOpen = isUnfolded(shared, path)
   const labeled = chip(label, isOpen ? 'label' : 'folded')
@@ -226,14 +237,14 @@ function Heading({ shared, path, label, title, summary, precedent, status }: Hea
           {foldedLine(shared, path, summary)}
         </Text>
       )}
-      <Note mod={mod} item={item} path={path} />
-      <NoteReveal mod={mod} noteKey={key} />
+      <Note shared={shared} path={path} />
+      <NoteReveal shared={shared} noteKey={key} />
     </Box>
   )
 }
 
 function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; readonly path: string; readonly shared: Shared }): RenderElement {
-  const { mod, item } = shared
+  const { item } = shared
   const key = keyOf(item, path)
   const keyPrefix = `drawing:${key}`
   const isFile = drawing.kind === 'files'
@@ -247,7 +258,7 @@ function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; rea
           </Button>
           <Mark shared={shared} path={path} />
           {[...drawingSubject(drawing, item.project, keyPrefix, shared.onFile), ...(!isOpen && isDrawingUnchanged(shared, path) ? [<Text dimColor>{wording.unchanged}</Text>] : [])].flatMap((part, index) => (index === 0 ? [part] : [<Text dimColor>·</Text>, part]))}
-          <NoteReveal mod={mod} noteKey={key} right={1} />
+          <NoteReveal shared={shared} noteKey={key} right={1} />
         </Box>
         {isOpen ? (
           <Box flexDirection="column" paddingX={1} paddingY={1}>
@@ -255,7 +266,7 @@ function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; rea
           </Box>
         ) : null}
       </Box>
-      <Note mod={mod} item={item} path={path} />
+      <Note shared={shared} path={path} />
     </Box>
   )
 }
@@ -263,7 +274,7 @@ function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; rea
 function Evidence({ node, shared }: { readonly node: Node; readonly shared: Shared }): RenderElement | null {
   const checks = evidenceOf(node)
   if (checks.length === 0) return null
-  const { mod, item } = shared
+  const { item } = shared
   const path = evidencePath(node.path)
   const key = keyOf(item, path)
   const isOpen = isUnfolded(shared, path)
@@ -280,23 +291,22 @@ function Evidence({ node, shared }: { readonly node: Node; readonly shared: Shar
           <Prose text={checks.map((check) => `- ${check.trim()}`).join('\n')} partKey={key} />
         </Box>
       ) : null}
-      <Note mod={mod} item={item} path={path} />
-      <NoteReveal mod={mod} noteKey={key} />
+      <Note shared={shared} path={path} />
+      <NoteReveal shared={shared} noteKey={key} />
     </Box>
   )
 }
 
 function IdeaView({ idea, path, shared }: { readonly idea: Idea; readonly path: string; readonly shared: Shared }): RenderElement {
-  const { mod, item } = shared
-  const key = keyOf(item, path)
+  const key = keyOf(shared.item, path)
   return (
     <Box flexDirection="column">
       <Box key={`idea:${key}`} flexDirection="column" paddingRight={noteRoom}>
         <Mark shared={shared} path={path} />
         <Prose text={idea.idea} partKey={key} />
         <Was shared={shared} path={path} />
-        <Note mod={mod} item={item} path={path} />
-        <NoteReveal mod={mod} noteKey={key} />
+        <Note shared={shared} path={path} />
+        <NoteReveal shared={shared} noteKey={key} />
       </Box>
       {idea.drawing === undefined ? null : <DrawingPart drawing={idea.drawing} path={drawingPath(path)} shared={shared} />}
     </Box>
@@ -342,7 +352,7 @@ function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shar
   )
 }
 
-export function Section({ label, mark, children }: { readonly label: string; readonly mark?: RenderChildren; readonly children: RenderChildren }): RenderElement {
+function Section({ label, mark, children }: { readonly label: string; readonly mark?: RenderChildren; readonly children: RenderChildren }): RenderElement {
   return (
     <Box flexDirection="column">
       <Box columnGap={1} flexWrap="wrap">
@@ -361,9 +371,9 @@ function Labeled({ shared, path, label, text, status }: { readonly shared: Share
       <Section label={label} mark={[status ?? null, <Mark shared={shared} path={path} />]}>
         <Prose text={text} partKey={key} />
         <Was shared={shared} path={path} />
-        <Note mod={shared.mod} item={shared.item} path={path} />
+        <Note shared={shared} path={path} />
       </Section>
-      <NoteReveal mod={shared.mod} noteKey={key} />
+      <NoteReveal shared={shared} noteKey={key} />
     </Box>
   )
 }
@@ -440,16 +450,18 @@ function actionButton(action: Action, onPress: () => void | Promise<void>): Rend
   )
 }
 
-function Actions({ mod, item, person, next }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person; readonly next: Item | undefined }): RenderElement {
+function Actions({ shared, next }: { readonly shared: Shared; readonly next: Item | undefined }): RenderElement {
+  const { mod, item, person } = shared
   const seen = revisionOf(item)
   const commentKey = keyOf(item, '')
   const answerKey = keyOf(item, 'answer')
+  const answerInput = answerInputKey(item.id)
   const actions = actionsOf(item, person, { hasNext: next !== undefined, isCommenting: mod.state.session.editing === commentKey })
   const answering = actions.find(({ does }) => does === 'answer')
   const buttons = actions.map((action) => {
     const { does } = action
     if (does === 'answer') return null
-    if (does === 'comment') return actionButton(action, () => toggleNote(mod, commentKey))
+    if (does === 'comment') return actionButton(action, () => toggleNote(shared, commentKey))
     if (does !== 'skip') return actionButton(action, () => answer(mod, item.id, seen, does))
     return next === undefined ? null : <Tooltip text={`${kindName(next)}: ${current(next).title}`}>{actionButton(action, () => skip(mod, item, seen, next.id))}</Tooltip>
   })
@@ -458,12 +470,14 @@ function Actions({ mod, item, person, next }: { readonly mod: Mod<InboxState>; r
       {answering === undefined ? null : (
         <Box flexDirection="column" alignItems="flex-start">
           {actionButton(answering, () => {
-            mod.state.session.editing = answerKey
+            setEditing(mod, answerKey)
+            return shared.focus(answerInput)
           })}
-          <Input key={`answer:${item.id}`} placeholder={wording.answerPlaceholder} submitLabel="send" rows={4} {...(mod.state.session.editing === answerKey ? { autoFocus: true } : {})} onSubmit={(words) => answer(mod, item.id, seen, { kind: 'answer', words })} />
+          <Typed text={mod.state.session.typed[answerInput]} />
+          <Input key={answerInput} placeholder={wording.answerPlaceholder} submitLabel="send" rows={4} onInput={(words) => setTyped(mod, answerInput, words)} onSubmit={(words) => answer(mod, item.id, seen, { kind: 'answer', words })} />
         </Box>
       )}
-      <Note mod={mod} item={item} path="" label={wording.comment} />
+      <Note shared={shared} path="" label={wording.comment} />
       <Box gap={1} flexWrap="wrap">
         {buttons}
       </Box>
@@ -487,25 +501,29 @@ export function Card({ children }: { readonly children: RenderChildren }): Rende
   )
 }
 
-export function ItemView({ mod, item, place, columns, onFile, onBrowser, next }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly place: string | undefined; readonly columns: number; readonly onFile: OpenFile; readonly onBrowser: () => Promise<void>; readonly next: Item | undefined }): RenderElement {
+export function ItemView({ mod, item, place, columns, onFile, onBrowser, focus, next }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly place: string | undefined; readonly columns: number; readonly onFile: OpenFile; readonly onBrowser: () => Promise<void>; readonly focus: Page['focus']; readonly next: Item | undefined }): RenderElement {
   const content = current(item)
   const person = personIn(mod, item)
-  const shared: Shared = { ...readingOf(item, person, mod.state.session.folds), mod, onFile, drawingColumns: columns - frameColumns }
+  const shared: Shared = { ...readingOf(item, person, mod.state.session.folds), mod, onFile, focus, drawingColumns: columns - frameColumns }
   const unseen = unseenOf(item, person)
   const itemKey = keyOf(item, '')
   return (
     <Card>
       <Box key={`card:${itemKey}`} flexDirection="column" gap={1} backgroundColor="subtle" paddingX={2} paddingY={1}>
-        <Box columnGap={1} flexWrap="wrap">
-          {chip(kindName(item), 'label')}
-          {unseen === undefined ? null : <Badge unseen={unseen} />}
-          <Text>from</Text>
-          {sender(senderIn(mod, item, item.origin))}
-          {place === undefined ? null : <Text>{`· ${place}`}</Text>}
-          <Button key="browser" hotkey="o" onPress={() => void onBrowser()}>
-            <Text color="suggestion">Open in browser</Text>
-            <Text dimColor>{'  o'}</Text>
-          </Button>
+        <Box columnGap={2}>
+          <Text wrap="wrap">
+            {chip(kindName(item), 'label')}
+            {unseen === undefined ? null : <Text> <Badge unseen={unseen} /></Text>}
+            {' from '}
+            {sender(senderIn(mod, item, item.origin))}
+            {place === undefined ? null : ` · ${place}`}
+          </Text>
+          <Box flexShrink={0}>
+            <Button key="browser" hotkey="o" onPress={() => void onBrowser()}>
+              <Text color="suggestion">Open in browser</Text>
+              <Text dimColor>{'  o'}</Text>
+            </Button>
+          </Box>
         </Box>
         <Box flexDirection="column">
           <Text bold wrap="wrap">
@@ -531,7 +549,7 @@ export function ItemView({ mod, item, place, columns, onFile, onBrowser, next }:
         )}
       </Box>
       <Bar>
-        <Actions mod={mod} item={item} person={person} next={next} />
+        <Actions shared={shared} next={next} />
       </Bar>
     </Card>
   )

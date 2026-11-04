@@ -116,6 +116,9 @@ Never: evidence that retells the test, such as "The test \"a filed item opens on
 
 After a correction to a proposal, choice, or question, call `revise` with the same id and the whole item again. The inbox marks every idea that changed since the user read it, shows what it said before, and folds what did not change.
 
+A rejection closes only the revision it answered. To resubmit a rejected proposal, choice, or question, call `revise` the same way. The revision reopens the item, and the rejection stays in its history.
+Never: file a rejected item again as a new item.
+
 A report is final, and `revise` refuses one. When the user requests changes to a report, fix them, then file a new report that holds only that round's changes.
 
 ## 9. An answer is not a rule

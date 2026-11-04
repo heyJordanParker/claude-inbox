@@ -37,15 +37,22 @@ function Prose({ text }: { readonly text: string }): ReactNode {
   )
 }
 
-function Chip({ tone, children }: { readonly tone: 'label' | 'folded' | 'unseen' | 'removed'; readonly children: ReactNode }): ReactNode {
+type PartKind = 'goal' | 'problem' | 'solution' | 'option' | 'change'
+
+function Chip({ tone, kind, part, children }: { readonly tone: 'label' | 'folded' | 'unseen' | 'removed'; readonly kind?: Item['kind']; readonly part?: PartKind | undefined; readonly children: ReactNode }): ReactNode {
   return (
-    <span className="chip" data-tone={tone}>
+    <span className="chip" data-tone={tone} data-kind={kind} data-part={part}>
       {children}
     </span>
   )
 }
 
-export function Badge({ unseen }: { readonly unseen: 'new' | 'changed' | 'changed inside' }): ReactNode {
+function partOf(node: Node): PartKind {
+  if (node.type !== 'solution') return node.type
+  return node.label === 'Option' ? 'option' : 'solution'
+}
+
+function Badge({ unseen }: { readonly unseen: 'new' | 'changed' | 'changed inside' }): ReactNode {
   return <Chip tone="unseen">{unseen}</Chip>
 }
 
@@ -203,11 +210,15 @@ function NoteButton({ shared, path }: { readonly shared: Shared; readonly path: 
   )
 }
 
-type HeadingProps = { readonly shared: Shared; readonly path: string; readonly label: string; readonly title: string; readonly summary: string; readonly precedent?: string | undefined; readonly status?: string | undefined }
+type HeadingProps = { readonly shared: Shared; readonly path: string; readonly part: PartKind; readonly label: string; readonly title: string; readonly summary: string; readonly precedent?: string | undefined; readonly status?: string | undefined }
 
-function Heading({ shared, path, label, title, summary, precedent, status }: HeadingProps): ReactNode {
+function Heading({ shared, path, part, label, title, summary, precedent, status }: HeadingProps): ReactNode {
   const isOpen = isUnfolded(shared, path)
-  const labeled = <Chip tone={isOpen ? 'label' : 'folded'}>{label}</Chip>
+  const labeled = (
+    <Chip tone={isOpen ? 'label' : 'folded'} part={part}>
+      {label}
+    </Chip>
+  )
   return (
     <div className="part">
       <span className="part__marks">
@@ -313,7 +324,7 @@ function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shar
   const children = childrenOf(node)
   return (
     <section className="node" data-type={node.type}>
-      <Heading shared={shared} path={node.path} label={headingOf(node)} title={titleOf(node)} summary={summaryOf(node)} precedent={precedent} status={status} />
+      <Heading shared={shared} path={node.path} part={partOf(node)} label={headingOf(node)} title={titleOf(node)} summary={summaryOf(node)} precedent={precedent} status={status} />
       {isUnfolded(shared, node.path) ? (
         <div className="node__body">
           {ideasOf(node).length === 0 ? null : <Ideas ideas={ideasOf(node)} parent={node.path} shared={shared} />}
@@ -337,11 +348,13 @@ function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shar
   )
 }
 
-function Section({ label, mark, children }: { readonly label: string; readonly mark?: ReactNode; readonly children: ReactNode }): ReactNode {
+function Section({ label, part, mark, children }: { readonly label: string; readonly part?: PartKind; readonly mark?: ReactNode; readonly children: ReactNode }): ReactNode {
   return (
     <section className="section">
       <span className="part__marks">
-        <Chip tone="label">{label}</Chip>
+        <Chip tone="label" part={part}>
+          {label}
+        </Chip>
         {mark}
       </span>
       {children}
@@ -351,9 +364,9 @@ function Section({ label, mark, children }: { readonly label: string; readonly m
 
 function Labeled({ shared, path, label, text }: { readonly shared: Shared; readonly path: string; readonly label: string; readonly text: string }): ReactNode {
   return (
-    <div className="part">
+    <div className="part lead">
       <NoteButton shared={shared} path={path} />
-      <Section label={label} mark={<Mark shared={shared} path={path} />}>
+      <Section label={label} part="goal" mark={<Mark shared={shared} path={path} />}>
         <Prose text={text} />
         <Was shared={shared} path={path} />
         <NoteOn shared={shared} path={path} />
@@ -370,7 +383,7 @@ function Lead({ shared }: { readonly shared: Shared }): ReactNode {
     <>
       <Labeled shared={shared} path="goal" label={wording.goal} text={content.goal} />
       <section className="node">
-        <Heading shared={shared} path="problem" label={wording.problem} title={content.problem.title} summary={plural(content.problem.ideas.length, 'idea')} />
+        <Heading shared={shared} path="problem" part="problem" label={wording.problem} title={content.problem.title} summary={plural(content.problem.ideas.length, 'idea')} />
         {isUnfolded(shared, 'problem') ? (
           <div className="node__body">
             <Ideas ideas={content.problem.ideas} parent="problem" shared={shared} />
@@ -503,15 +516,17 @@ export function ItemView({ item, person, senders, place, next, folds: openFolds,
     <article className="item" aria-label={content.title}>
       <header className="item__header">
         <p className="item__meta">
-          <Chip tone="label">{kindName(item)}</Chip>
+          <Chip tone="label" kind={item.kind}>
+            {kindName(item)}
+          </Chip>
           {unseen === undefined ? null : <Badge unseen={unseen} />}
           <span>from</span>
           <Sender {...senderOf(item.origin, item.project, senders)} />
           {place === undefined ? null : <span>· {place}</span>}
         </p>
         <h2 className="item__title">
-        <Title title={content.title} />
-      </h2>
+          <Title title={content.title} />
+        </h2>
         <Was shared={shared} path="title" />
       </header>
       <div className="item__body">

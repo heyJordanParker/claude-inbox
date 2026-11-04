@@ -1,8 +1,8 @@
 import type { Mod } from '../node_modules/@cmodjs/core/mod.js'
-import { find, rememberPerson, runningSessions, scoped, storeOf } from './actions.js'
+import { find, rememberPerson, scoped, storeOf } from './actions.js'
 import * as core from './items/answers.js'
-import { isFollowed, unfollowedWarning } from './items/heard.js'
-import { revisionOf, shownOf, type Item, type Note, type Person } from './items/item.js'
+import { unfollowedWarning } from './items/heard.js'
+import { isFollowed, revisionOf, shownOf, type Item, type Note, type Person } from './items/item.js'
 import type { InboxState } from './state.js'
 
 const sending = new Set<string>()
@@ -17,7 +17,7 @@ export async function answer(mod: Mod<InboxState>, id: string, seen: number, giv
     if (given.kind === 'correct') stopEditing(mod, id)
     else forget(mod, id)
     const item = find(mod, id)
-    if (await isFollowed(item, runningSessions, (line) => mod.log(line))) return
+    if (isFollowed(item, mod.state.memory.senders)) return
     const { message, description } = unfollowedWarning(item)
     mod.toast.warning(message, { description })
   } catch (error) {
@@ -52,10 +52,11 @@ export async function markRead(mod: Mod<InboxState>, item: Item): Promise<void> 
 }
 
 export async function view(mod: Mod<InboxState>, id: string, onScreen: boolean): Promise<void> {
-  const left = shownOf(scoped(mod), mod.state.memory.person, mod.state.session.viewing)
+  const left = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, mod.state.session.viewing)
   mod.state.session.viewing = id
   if (left === undefined || left.id === id) return
-  mod.state.session.editing = null
+  setEditing(mod, null)
+  forgetTyped(mod, answerInputKey(left.id))
   if (onScreen) await markRead(mod, left)
 }
 
@@ -64,11 +65,41 @@ export async function skip(mod: Mod<InboxState>, item: Item, seen: number, next:
   await view(mod, next, true)
 }
 
+export function noteInputKey(key: string): string {
+  return `words:${key}`
+}
+
+export function answerInputKey(id: string): string {
+  return `answer:${id}`
+}
+
+export function setEditing(mod: Mod<InboxState>, key: string | null): void {
+  const closed = mod.state.session.editing
+  mod.state.session.editing = key
+  if (closed !== null && closed !== key) forgetTyped(mod, noteInputKey(closed))
+}
+
+export function isWriting(mod: Mod<InboxState>): boolean {
+  const { editing, typed, viewing } = mod.state.session
+  const shown = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, viewing)
+  return editing !== null || (shown !== undefined && (typed[answerInputKey(shown.id)] ?? '') !== '')
+}
+
+export function setTyped(mod: Mod<InboxState>, inputKey: string, text: string): void {
+  mod.state.session.typed = { ...mod.state.session.typed, [inputKey]: text }
+}
+
+function forgetTyped(mod: Mod<InboxState>, inputKey: string): void {
+  if (!(inputKey in mod.state.session.typed)) return
+  mod.state.session.typed = Object.fromEntries(Object.entries(mod.state.session.typed).filter(([key]) => key !== inputKey))
+}
+
 function stopEditing(mod: Mod<InboxState>, id: string): void {
-  if (mod.state.session.editing?.startsWith(`${id}:`) === true) mod.state.session.editing = null
+  if (mod.state.session.editing?.startsWith(`${id}:`) === true) setEditing(mod, null)
 }
 
 function forget(mod: Mod<InboxState>, id: string): void {
   stopEditing(mod, id)
+  forgetTyped(mod, answerInputKey(id))
   mod.state.session.folds = Object.fromEntries(Object.entries(mod.state.session.folds).filter(([key]) => !key.startsWith(`${id}:`)))
 }

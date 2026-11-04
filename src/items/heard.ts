@@ -23,7 +23,7 @@ function messageOf(item: Item, answer: Answer, number: number): string {
   const words = answer.words === undefined ? '' : `: "${answer.words}"`
   const withNotes = (said: string) => (answer.corrections === undefined || answer.corrections.length === 0 ? said : [`${said}, with these notes:`, ...noteLines(answer), 'Apply them as you go.'].join('\n'))
   if (answer.kind === 'approve') return withNotes(`Inbox: the user approved the proposal ${named}${words}`)
-  if (answer.kind === 'reject') return withNotes(`Inbox: the user rejected ${item.kind === 'options' ? 'every option in' : `the ${item.kind}`} ${named}`)
+  if (answer.kind === 'reject') return [withNotes(`Inbox: the user rejected ${item.kind === 'options' ? 'every option in' : `the ${item.kind}`} ${named}`), `To resubmit it, revise it with the inbox's revise tool, which reopens it for the user. Never file it again as a new item.`].join('\n')
   if (answer.kind === 'option') return withNotes(`Inbox: the user picked "${answer.option ?? ''}" in ${named}${words}`)
   if (answer.kind === 'answer') return withNotes(`Inbox: the user answered ${named}${words}`)
   if (answer.kind === 'acknowledge') return withNotes(`Inbox: the user marked the report ${named} done${words}`)
@@ -53,14 +53,6 @@ export function advanced(heard: Heard, id: string, told: Told, start: string): H
   const marks = marksIn(heard, id, start)
   const mark = marks[told.file]
   return { ...heard, [id]: { ...marks, [told.file]: mark.at === told.at ? { at: told.at, count: mark.count + 1 } : { at: told.at, count: 1 } } }
-}
-
-export async function isFollowed(item: Item, running: () => Promise<ReadonlySet<string>>, log: (line: string) => void): Promise<boolean> {
-  const sessions = await running().catch((error: unknown) => {
-    log(`The answer to ${item.id} is recorded, but the running sessions could not be listed, so no warning says whether a session hears it: ${error instanceof Error ? error.message : String(error)}`)
-    return undefined
-  })
-  return sessions === undefined || item.subscribers.some((each) => sessions.has(each.session))
 }
 
 export function unfollowedWarning(item: Item): { readonly message: string; readonly description: string } {

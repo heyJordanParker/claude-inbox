@@ -1,7 +1,7 @@
 {
   "name": "inbox",
   "displayName": "Inbox",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "One inbox for every proposal, choice, question, and report your Claude Code agents bring you, across every session. Agents fill typed fields, the inbox checks them against the code and draws the Architecture, and your answer goes back to every session that follows the item.",
   "author": {
     "name": "Jordan Parker",
@@ -15,7 +15,7 @@
   "dependencies": [
     {
       "name": "cmod",
-      "version": ">=5.3.0"
+      "version": ">=5.6.0"
     }
   ]
 }

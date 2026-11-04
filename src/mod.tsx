@@ -3,9 +3,9 @@ import { program } from '../node_modules/@cmodjs/core/jobs/program.js'
 import { slashCommand } from '../node_modules/@cmodjs/core/jobs/slash-command.js'
 import { List, Paragraph } from '../node_modules/@cmodjs/core/ui/markdown.js'
 import { learnSenders, load, loadAll, personIn, scoped, startDelivery, storeOf, widenTo } from './actions.js'
-import { markRead, view } from './answers.js'
-import { current as contentOf, shownOf, statusOf, type Item } from './items/item.js'
-import { moveIntoPersonFiles, rereadMs, savedServer, serverPath, type Server } from './items/store.js'
+import { isWriting, markRead, setEditing, view } from './answers.js'
+import { current as contentOf, plural, shownOf, statusOf, type Item } from './items/item.js'
+import { convertJsonFiles, rereadMs, savedServer, serverPath, type Server } from './items/store.js'
 import { LinkedBlock } from './links.js'
 import { filePage, showFile } from './pages/file.js'
 import { inboxPage } from './pages/inbox.js'
@@ -45,7 +45,7 @@ export const inbox = defineMod({
       }
     }
     const file = mod.sidebar.add(filePage)
-    const page = mod.sidebar.add(inboxPage((current, project, path, diff) => showFile(current, file, project, path, diff), openInBrowser))
+    const page = mod.sidebar.add(inboxPage((current, project, path, diff) => showFile(current, file, project, path, diff), openInBrowser, (key): Promise<void> => page.focus(key)))
     const show = async (current: Mod<InboxState>, id: string, byPerson: boolean): Promise<void> => {
       widenTo(current, id)
       await Promise.all([view(current, id, byPerson && page.isShown), byPerson ? page.open({ focus: true }) : page.open()])
@@ -53,13 +53,13 @@ export const inbox = defineMod({
     const open = () => page.open({ focus: true })
     const toggle = async (current: Mod<InboxState>): Promise<void> => {
       if (!page.isShown) return open()
-      const left = shownOf(scoped(current), current.state.memory.person, current.state.session.viewing)
-      current.state.session.editing = null
+      const left = shownOf(scoped(current), current.state.memory.person, current.state.memory.senders, current.state.session.viewing)
+      setEditing(current, null)
       await Promise.all([page.close(), ...(left === undefined ? [] : [markRead(current, left)])])
     }
     const filed = (current: Mod<InboxState>, id: string) => {
       const item = current.state.memory.items.find((each) => each.id === id)
-      if (current.state.session.editing === null || item === undefined) return void show(current, id, false)
+      if (!isWriting(current) || item === undefined) return void show(current, id, false)
       current.toast.info(`"${titleOf(item)}" is in the inbox`, { action: { label: 'Open', onClick: () => show(current, id, true) } })
     }
     const linked = (current: Mod<InboxState>, id: string) => {
@@ -67,14 +67,19 @@ export const inbox = defineMod({
       if (item === undefined) return current.toast.warning(`The inbox has no item ${id}`)
       return show(current, id, true)
     }
-    const moveNotes = async (current: Mod<InboxState>): Promise<void> => {
-      const moved = await moveIntoPersonFiles(store, current.state.global.notes)
-      if (moved === 0) return
-      current.state.global.notes = {}
-      current.log(`moved ${moved} items into person/`)
+    const remove = async (path: string): Promise<void> => {
+      const removed = await process.run(['rm', '-f', path])
+      if (removed.exitCode !== 0) throw new Error(`rm ${path} exited ${removed.exitCode}: ${removed.stderr.trim()}`)
+    }
+    const convert = async (current: Mod<InboxState>): Promise<void> => {
+      const { converted, skipped } = await convertJsonFiles(store, current.state.global.notes, remove)
+      for (const line of skipped) current.log(`left ${line}`)
+      if (converted === 0) return
+      if (skipped.length === 0) current.state.global.notes = {}
+      current.log(`converted ${plural(converted, 'JSON file')} to Markdown`)
     }
 
-    const loaded = Promise.all([moveNotes(mod), startDelivery(mod)]).then(() => load(mod))
+    const loaded = Promise.all([convert(mod), startDelivery(mod)]).then(() => load(mod))
     fs.onChange({ path: store.changed }, () => load(mod))
     mod.every(rereadMs, () => Promise.all([load(mod), learnSenders(mod)]))
     sessions.current.onSessionStart(() => loadAll(mod))
@@ -83,7 +88,7 @@ export const inbox = defineMod({
 
     mod.widgets.add(waitingWidget(open))
     mod.hotkeys.toggle.onPress(() => toggle(mod))
-    mod.use(slashCommand({ name: 'inbox', description: 'Show or hide the inbox: the proposals, options, questions, and reports waiting for you', immediate: true, reply: (_, current) => toggle(current) }))
+    mod.use(slashCommand({ name: 'inbox', description: 'Show or hide the inbox: the proposals, options, questions, and reports agents bring you', immediate: true, reply: (_, current) => toggle(current) }))
     mod.styles.add({ kind: Paragraph, render: (current, props) => <LinkedBlock props={props} items={store.items} onOpen={(id) => linked(current, id)} /> })
     mod.styles.add({ kind: List, render: (current, props) => <LinkedBlock props={props} items={store.items} onOpen={(id) => linked(current, id)} /> })
   },

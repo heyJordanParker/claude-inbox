@@ -17,6 +17,7 @@ export type InboxState = {
     viewing: string | null
     folds: Readonly<Record<string, boolean>>
     editing: string | null
+    typed: Readonly<Record<string, string>>
     file: ShownFile | null
     heard: Heard
   }
@@ -27,6 +28,6 @@ export type InboxState = {
 
 export const initialState: InboxState = {
   memory: { items: [], person: {}, repositories: {}, senders: {} },
-  session: { scope: 'session', viewing: null, folds: {}, editing: null, file: null, heard: {} },
+  session: { scope: 'session', viewing: null, folds: {}, editing: null, typed: {}, file: null, heard: {} },
   global: { notes: {} },
 }

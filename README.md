@@ -23,6 +23,10 @@ An agent declares what each drawing shows: the files, the signatures, the lines,
 
 The `proposals` Skill teaches agents to write each kind this way.
 
+## Every item is a Markdown file
+
+Each item is `~/.local/share/cmod/data/inbox/items/<id>.md`, which any editor opens: the title and each Problem and Solution as headings, the goal under the title, each idea as a paragraph, and each drawing as a fenced block named for its kind. Earlier revisions are in `revisions/<id>/`, and your answers and notes in `person/<id>.md`. Before the inbox stores an item, your rulebook rules check it as `@inbox/<id>.md`, and a rule's refusal goes back to the agent word for word.
+
 ## What you see
 
 An item opens in the Sidebar as soon as an agent files it. The agent's reply links to it, and clicking the link opens it again. `/inbox` or the count above the prompt opens the Inbox page, and `/inbox` hides it again. The inbox binds no key. Its "Show or hide the inbox" hotkey starts unbound, and you pick its key in Settings, under inbox, Hotkeys, or with `cmod hotkey inbox toggle <combo>`.
@@ -79,7 +83,11 @@ Each heading starts with a row of chips, its kind and whether it changed, and it
 
 A new item carries a **new** badge, and an item an agent revised after you read it carries **changed**, on the page, in the list, and in the count above the prompt. A revised item opens only the parts that changed, shows each changed idea's old words struck through, and shows each part the revision removed, struck through, where it was. A report keeps each change's evidence in a folded Evidence section under it. An item counts as read once you move past it, answer it, or close the page on it.
 
-The page shows this session's items: the ones it filed or follows. The chips at the top widen it to this project, which counts every worktree of the repository, or to every project, and each chip counts the open items it holds. Only the session that files an item opens the page on it.
+Under the item, the page lists the rest as cards, like an email inbox. The list holds every open item whose agent still runs. Each card shows its kind, its status (**new**, **changed**, or **changes requested**), the session that filed it in that session's color, the time, and the title.
+
+Under the list, the **Archive** holds every item you answered or an agent withdrew, marked approved, rejected, picked, answered, done, or withdrawn. It also holds every open item that no running session follows, because its sessions closed or stopped following it, marked **agent closed**. Nothing is ever deleted. An archived item still opens, and an open one still takes your answer, which reaches its session when the session resumes. An item moves back to the list as soon as its session runs again.
+
+The page shows this session's items: the ones it filed or follows. The chips at the top widen it to this project, which counts every worktree of the repository, or to every project, and each chip counts the items in its list, not its Archive. Only the session that files an item opens the page on it.
 
 The actions follow the review and inbox tools you already use. **Approve**, **Reject**, and **Request changes** work as in a GitHub pull request review, and your notes go out with each. **Done** closes a report, and a report has no Reject. **Next →** puts the item behind the rest, marked read, and opens the next one. After Request changes the item stays on the page with what you sent, so you can add more while the agent revises, and the agent's revision ends the wait on its own.
 

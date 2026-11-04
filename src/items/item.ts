@@ -94,7 +94,7 @@ export type Kind = Content['kind']
 
 export type Author = { readonly session: string; readonly agent?: string }
 
-export type Sender = { readonly title: string; readonly color?: string }
+export type Sender = { readonly title: string; readonly color?: string; readonly isRunning?: boolean }
 
 export type Senders = Readonly<Record<string, Sender>>
 
@@ -105,8 +105,8 @@ function titleOf(title: string, agent: string | undefined, project: string, sess
   return line === '' || line.length > longestTitle ? [agent ?? projectName(project), session.slice(0, 8)].filter((part) => part !== '').join(' ') : line
 }
 
-export function sendersOf(sessions: readonly { readonly id: string; readonly title: string; readonly color?: string; readonly project: string; readonly agentType?: string }[]): Senders {
-  return Object.fromEntries(sessions.map((each) => [each.id, { title: titleOf(each.title, each.agentType, each.project, each.id), ...(each.color === undefined ? {} : { color: each.color }) }]))
+export function sendersOf(sessions: readonly { readonly id: string; readonly title: string; readonly color?: string; readonly project: string; readonly agentType?: string; readonly isRunning: boolean }[]): Senders {
+  return Object.fromEntries(sessions.map((each) => [each.id, { title: titleOf(each.title, each.agentType, each.project, each.id), ...(each.color === undefined ? {} : { color: each.color }), isRunning: each.isRunning }]))
 }
 
 export function senderOf(author: Author, project: string, senders: Senders): Sender {
@@ -123,7 +123,7 @@ export function isUnnamed(items: readonly Item[], senders: Senders): boolean {
 }
 
 export function sendersFor(items: readonly Item[], listed: Senders): Senders {
-  return Object.fromEntries(items.flatMap(sessionsOf).map((id) => [id, listed[id] ?? { title: '' }]))
+  return Object.fromEntries(items.flatMap(sessionsOf).map((id) => [id, listed[id] ?? { title: '', isRunning: false }]))
 }
 
 type Subscriber = Author & { readonly since: string }
@@ -189,7 +189,7 @@ export function revisedAt(item: Item): string {
 }
 
 export function closingOf(item: Item, person: Person): Answer | Withdrawal | undefined {
-  const answered = person.answers.find((answer) => answer.kind !== 'correct')
+  const answered = person.answers.find((answer) => answer.kind !== 'correct' && (answer.kind !== 'reject' || answer.revision === revisionOf(item)))
   const withdrawn = item.withdrawal
   if (withdrawn === undefined) return answered
   return answered !== undefined && answered.at <= withdrawn.at ? answered : withdrawn
@@ -213,20 +213,33 @@ export function isWithAgent(item: Item, person: Person): boolean {
   return isOpen(item, person) && sentCorrections(item, person).length > 0
 }
 
+export function isRunning(session: string, senders: Senders): boolean {
+  return senders[session]?.isRunning !== false
+}
+
+export function isFollowed(item: Item, senders: Senders): boolean {
+  return item.subscribers.some(({ session }) => isRunning(session, senders))
+}
+
+export function isArchived(item: Item, person: Person, senders: Senders): boolean {
+  return !isOpen(item, person) || !isFollowed(item, senders)
+}
+
 export function byQueue(person: PersonFiles): (a: Item, b: Item) => number {
   return (a, b) => personOf(person, a).queuedAt.localeCompare(personOf(person, b).queuedAt)
 }
 
-export function queue(items: readonly Item[], person: PersonFiles): Item[] {
-  return items.filter((item) => isOpen(item, personOf(person, item)) && !isWithAgent(item, personOf(person, item))).sort(byQueue(person))
+export function queue(items: readonly Item[], person: PersonFiles, senders: Senders): Item[] {
+  return items.filter((item) => !isArchived(item, personOf(person, item), senders)).sort(byQueue(person))
 }
 
-export function withAgents(items: readonly Item[], person: PersonFiles): Item[] {
-  return items.filter((item) => isWithAgent(item, personOf(person, item))).sort(byQueue(person))
+export function archive(items: readonly Item[], person: PersonFiles, senders: Senders): Item[] {
+  return items.filter((item) => isArchived(item, personOf(person, item), senders)).sort((a, b) => cardTime(b, personOf(person, b)).localeCompare(cardTime(a, personOf(person, a))))
 }
 
-export function shownOf(items: readonly Item[], person: PersonFiles, viewing: string | null): Item | undefined {
-  return items.find((item) => item.id === viewing) ?? queue(items, person)[0] ?? withAgents(items, person)[0]
+export function shownOf(items: readonly Item[], person: PersonFiles, senders: Senders, viewing: string | null): Item | undefined {
+  const listed = queue(items, person, senders)
+  return items.find((item) => item.id === viewing) ?? listed.find((item) => !isWithAgent(item, personOf(person, item))) ?? listed[0]
 }
 
 export type Unseen = 'new' | 'changed'
@@ -294,9 +307,10 @@ export const wording = {
   leftOpen: 'left open',
   removed: 'removed',
   unchanged: 'unchanged',
-  waiting: 'Waiting',
-  withAgents: 'With agents',
-  closed: 'Closed',
+  archive: 'Archive',
+  agentClosed: 'agent closed',
+  changesRequested: 'changes requested',
+  emptyHint: "An agent's next proposal, choice, question, or report shows here as it arrives.",
 } as const
 
 export function notePlaceholder(label: string): string {
@@ -319,12 +333,12 @@ export function earlierNotes(item: Item, person: Person): Note[] {
   return person.notes.filter((note) => note.revision !== revisionOf(item))
 }
 
-export function nextAfter(waiting: readonly Item[], shown: Item): Item | undefined {
-  const index = waiting.indexOf(shown)
-  return waiting.find((item) => item.id !== shown.id && (index === -1 || waiting.indexOf(item) > index)) ?? waiting.find((item) => item.id !== shown.id)
+export function nextAfter(listed: readonly Item[], shown: Item): Item | undefined {
+  const index = listed.indexOf(shown)
+  return listed.find((item) => item.id !== shown.id && (index === -1 || listed.indexOf(item) > index)) ?? listed.find((item) => item.id !== shown.id)
 }
 
-const closedWords: Readonly<Record<(Answer | Withdrawal)['kind'], string>> = { approve: 'approved', reject: 'rejected', option: 'picked', answer: 'answered', acknowledge: 'done', correct: 'changes requested', withdraw: 'withdrawn' }
+const closedWords: Readonly<Record<(Answer | Withdrawal)['kind'], string>> = { approve: 'approved', reject: 'rejected', option: 'picked', answer: 'answered', acknowledge: 'done', correct: wording.changesRequested, withdraw: 'withdrawn' }
 
 export function closedWord(closing: Answer | Withdrawal): string {
   return closedWords[closing.kind]
@@ -334,21 +348,25 @@ export function closedLine(closing: Answer | Withdrawal, now: number): string {
   return `${closedWord(closing)} · ${ago(closing.at, now)}`
 }
 
-export function positionLine(waiting: readonly Item[], shown: Item, person: Person, now: number): string | undefined {
+export function positionLine(listed: readonly Item[], shown: Item, person: Person, now: number): string | undefined {
   if (closingOf(shown, person) !== undefined) return undefined
-  const index = waiting.indexOf(shown)
-  return `${index === -1 ? 'waiting on agent' : `${index + 1} of ${waiting.length}`} · ${whenLine(shown, person, now)}`
+  const index = listed.indexOf(shown)
+  return `${index === -1 ? wording.agentClosed : `${index + 1} of ${listed.length}`} · ${whenLine(shown, person, now)}`
 }
 
-export type Closed = { readonly item: Item; readonly closing: Answer | Withdrawal }
+export type CardStatus = { readonly word: string; readonly tone: 'unseen' | 'requested' | 'archived' }
 
-export function closedItems(items: readonly Item[], person: PersonFiles): Closed[] {
-  return items
-    .flatMap((item) => {
-      const closing = closingOf(item, personOf(person, item))
-      return closing === undefined ? [] : [{ item, closing }]
-    })
-    .sort((a, b) => b.closing.at.localeCompare(a.closing.at))
+export function cardStatusOf(item: Item, person: Person, senders: Senders): CardStatus | undefined {
+  const closing = closingOf(item, person)
+  if (closing !== undefined) return { word: closedWord(closing), tone: 'archived' }
+  if (isArchived(item, person, senders)) return { word: wording.agentClosed, tone: 'archived' }
+  if (isWithAgent(item, person)) return { word: wording.changesRequested, tone: 'requested' }
+  const unseen = unseenOf(item, person)
+  return unseen === undefined ? undefined : { word: unseen, tone: 'unseen' }
+}
+
+export function cardTime(item: Item, person: Person): string {
+  return closingOf(item, person)?.at ?? revisedAt(item)
 }
 
 export function closingLines(item: Item, closing: Answer | Withdrawal, senders: Senders): string[] {
@@ -360,7 +378,7 @@ export function closingLines(item: Item, closing: Answer | Withdrawal, senders: 
 }
 
 export function emptyLine(scope: Scope): string {
-  return `No open items · ${scopeNames[scope]}`
+  return `Your inbox is empty · ${scopeNames[scope]}`
 }
 
 export function narrowestScope(offered: readonly Scope[], from: Scope, id: string, itemsIn: (scope: Scope) => readonly Item[]): Scope {

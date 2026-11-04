@@ -1,10 +1,10 @@
-import { sessions, type Job, type Mod, type Tool } from '../node_modules/@cmodjs/core/mod.js'
+import { messageOf, process, sessions, type Job, type Mod, type Tool } from '../node_modules/@cmodjs/core/mod.js'
 import { tool } from '../node_modules/@cmodjs/core/jobs/tool.js'
 import { author, change, create, find, learnSenders, load, personIn, senderIn, storeOf } from './actions.js'
 import { completeContent, type DeclaredContent } from './completion.js'
 import { format } from './items/formats.js'
-import { byQueue, current, isUnnamed, revisionNumber, revisionOf, statusOf, type Item, type Kind } from './items/item.js'
-import { itemPath } from './items/store.js'
+import { byQueue, closingOf, current, isUnnamed, revisionNumber, revisionOf, statusOf, type Item, type Kind } from './items/item.js'
+import { itemPath, type Check } from './items/store.js'
 import { schemas } from './schemas.js'
 import type { InboxState } from './state.js'
 
@@ -20,6 +20,38 @@ function linkOf(mod: Mod<InboxState>, item: Item): string {
 
 function linkLine(mod: Mod<InboxState>, item: Item): string {
   return `Give the user this link in your reply, which opens it in their Sidebar: ${linkOf(mod, item)}`
+}
+
+type RulebookAnswer = { readonly refuse?: string; readonly note?: string; readonly failures?: readonly unknown[] }
+
+const rulebookMs = 20_000
+
+function rulebookCheck(mod: Mod<InboxState>, told: string[]): Check {
+  return async (id, markdown) => {
+    const name = `@inbox/${id}.md`
+    const notRun = (why: string) => {
+      told.push(`rulebook did not check this item, because rulebook text ${name} ${why}`)
+    }
+    let answer: RulebookAnswer
+    try {
+      const { exitCode, stdout, stderr } = await process.run(['rulebook', 'text', name], { stdin: markdown, cwd: mod.folder, timeoutMs: rulebookMs })
+      if (exitCode !== 0) return notRun(`exited ${exitCode}: ${stderr.trim()}`)
+      try {
+        answer = JSON.parse(stdout) as RulebookAnswer
+      } catch {
+        return notRun(`answered no JSON: ${stdout.trim()}`)
+      }
+    } catch (error) {
+      return notRun(`did not run: ${messageOf(error)}`)
+    }
+    if (typeof answer.refuse === 'string') throw new Error(answer.refuse)
+    if (typeof answer.note === 'string') told.push(answer.note)
+    for (const failure of answer.failures ?? []) told.push(`rulebook could not run a rule: ${typeof failure === 'string' ? failure : JSON.stringify(failure)}`)
+  }
+}
+
+function withTold(answer: string, told: readonly string[]): string {
+  return [answer, ...told].join('\n\n')
 }
 
 export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, id: string) => void): Job<Tool, InboxState>[] {
@@ -41,18 +73,24 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
     const content = await completeContent(declared, project)
     const by = author()
     const now = new Date().toISOString()
-    const item = await create(mod, declared.title, (id) => ({
-      format,
-      id,
-      kind: declared.kind,
-      project,
-      origin: by,
-      subscribers: [{ ...by, since: now }],
-      revisions: [{ ...by, content, at: now }],
-      updatedAt: now,
-    }))
+    const told: string[] = []
+    const item = await create(
+      mod,
+      declared.title,
+      (id) => ({
+        format,
+        id,
+        kind: declared.kind,
+        project,
+        origin: by,
+        subscribers: [{ ...by, since: now }],
+        revisions: [{ ...by, content, at: now }],
+        updatedAt: now,
+      }),
+      rulebookCheck(mod, told),
+    )
     shown(mod, item.id)
-    return `The inbox holds the ${item.kind} "${declared.title}" as ${item.id}, and shows it to the user. This session is subscribed, so the answer arrives here as a prompt. ${linkLine(mod, item)}`
+    return withTold(`The inbox holds the ${item.kind} "${declared.title}" as ${item.id}, and shows it to the user. This session is subscribed, so the answer arrives here as a prompt. ${linkLine(mod, item)}`, told)
   }
 
   return [
@@ -82,7 +120,7 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
     ),
     inboxTool(
       'revise',
-      'Replace what an open proposal, choice, or question says with a new revision, after a correction or when you learn more. A report is final: file a new report for the next round of work. Any session may revise any open item, and revising subscribes this session to it. Give the whole item again, under the key of the kind it was filed as: proposal, options, question, or report.',
+      'Replace what an open or rejected proposal, choice, or question says with a new revision, after a correction, after a rejection, or when you learn more. A revision reopens a rejected item for the user, so revise it instead of filing a new item. A report is final: file a new report for the next round of work. Any session may revise any open or rejected item, and revising subscribes this session to it. Give the whole item again, under the key of the kind it was filed as: proposal, options, question, or report.',
       schemas.revise,
       async (input, mod) => {
         const known = find(mod, input['id'] as string)
@@ -91,16 +129,22 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
         if (given.length !== 1 || given[0] !== known.kind) throw new Error(`${known.id} was filed as ${known.kind}, so give exactly one key, ${known.kind}, with the whole item.`)
         const content = await completeContent({ kind: known.kind, ...(input[known.kind] as object) } as DeclaredContent, known.project)
         const by = author()
-        const revised = await change(mod, known.id, (fresh, person) => {
-          const status = statusOf(fresh, person)
-          if (status !== 'open') throw new Error(`${fresh.id} is ${status}. Put a new item in the inbox instead.`)
-          if (JSON.stringify(content) === JSON.stringify(current(fresh))) throw new Error(`${fresh.id} already says exactly this as revision ${revisionNumber(revisionOf(fresh))}. Change what it says before you revise it, or leave it as it is, and it keeps waiting for the user.`)
-          const at = new Date().toISOString()
-          const subscribers = fresh.subscribers.some((each) => each.session === by.session) ? fresh.subscribers : [...fresh.subscribers, { ...by, since: at }]
-          return { ...fresh, subscribers, revisions: [...fresh.revisions, { ...by, content, at }] }
-        })
+        const told: string[] = []
+        const revised = await change(
+          mod,
+          known.id,
+          (fresh, person) => {
+            const status = statusOf(fresh, person)
+            if (status !== 'open' && closingOf(fresh, person)?.kind !== 'reject') throw new Error(`${fresh.id} is ${status}. Put a new item in the inbox instead.`)
+            if (JSON.stringify(content) === JSON.stringify(current(fresh))) throw new Error(`${fresh.id} already says exactly this as revision ${revisionNumber(revisionOf(fresh))}. Change what it says before you revise it.`)
+            const at = new Date().toISOString()
+            const subscribers = fresh.subscribers.some((each) => each.session === by.session) ? fresh.subscribers : [...fresh.subscribers, { ...by, since: at }]
+            return { ...fresh, subscribers, revisions: [...fresh.revisions, { ...by, content, at }] }
+          },
+          rulebookCheck(mod, told),
+        )
         shown(mod, revised.id)
-        return `Revised ${revised.id} to revision ${revisionNumber(revisionOf(revised))}, and the inbox shows it to the user. ${linkLine(mod, revised)}`
+        return withTold(`Revised ${revised.id} to revision ${revisionNumber(revisionOf(revised))}, and the inbox shows it to the user. ${linkLine(mod, revised)}`, told)
       },
     ),
     inboxTool('withdraw', 'Take an item out of the inbox because it no longer needs an answer.', schemas.withdraw, async (input, mod) => {

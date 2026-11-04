@@ -2,9 +2,9 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import { join, sep } from 'node:path'
 import { answer, dropNote, markRead, Moved, NotOffered, setNote, skip, type Given } from '../../src/items/answers.js'
-import { isFollowed } from '../../src/items/heard.js'
-import { isUnnamed, sendersFor, type Item, type Person, type Senders } from '../../src/items/item.js'
-import { itemOf, itemPath, readerOf, rereadMs, type Changed, type Store } from '../../src/items/store.js'
+import { isFollowed, isUnnamed, plural, sendersFor, type Item, type Person, type Senders } from '../../src/items/item.js'
+import { convertJsonFiles, itemOf, itemPath, readerOf, rereadMs, type Changed, type Store } from '../../src/items/store.js'
+import { remove } from './disk.js'
 import script from '../build/script.txt' with { type: 'file' }
 import shell from '../build/shell.txt' with { type: 'file' }
 import style from '../build/style.txt' with { type: 'file' }
@@ -13,7 +13,6 @@ export type Options = {
   readonly store: Store
   readonly port: number
   readonly token: string
-  readonly runningSessions: () => Promise<ReadonlySet<string>>
   readonly senders: () => Promise<Senders>
   readonly repositoryOf: (project: string) => Promise<string>
 }
@@ -94,7 +93,7 @@ function givenOf(body: Readonly<Record<string, unknown>>): Given {
   return { kind: kind as Given['kind'],...(option === undefined ? {} : { option }), ...(words === undefined ? {} : { words }) }
 }
 
-export async function serve({ store, port, token, runningSessions, senders: listSenders, repositoryOf }: Options): Promise<Serving> {
+export async function serve({ store, port, token, senders: listSenders, repositoryOf }: Options): Promise<Serving> {
   const items = new Map<string, Item>()
   const person = new Map<string, Person>()
   const repositories = new Map<string, Promise<string>>()
@@ -213,7 +212,7 @@ export async function serve({ store, port, token, runningSessions, senders: list
     if (action === 'answer' && request.method === 'POST') {
       const body = await bodyOf(request)
       const answered = await answer(store, id, seenOf(body), givenOf(body))
-      return json(200, { person: answered, isFollowed: await isFollowed(item, runningSessions, (line) => console.error(`inbox serve: ${line}`)) })
+      return json(200, { person: answered, isFollowed: isFollowed(item, senders) })
     }
     if (action === 'notes' && (request.method === 'PUT' || request.method === 'DELETE')) {
       const { path, revision, words } = await bodyOf(request)
@@ -250,6 +249,9 @@ export async function serve({ store, port, token, runningSessions, senders: list
     throw new Refusal(404, `${request.method} ${pathname} is not an inbox route.`)
   }
 
+  const { converted, skipped } = await convertJsonFiles(store, {}, remove)
+  for (const line of skipped) console.error(`inbox serve left ${line}`)
+  if (converted > 0) console.error(`inbox serve converted ${plural(converted, 'JSON file')} to Markdown`)
   await poll()
   const server = Bun.serve({
     hostname: host,

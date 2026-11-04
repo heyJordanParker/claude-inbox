@@ -2,6 +2,8 @@ const change = { type: 'string', enum: ['add', 'remove', 'edit'] } as const
 
 const line = (description: string) => ({ type: 'string', pattern: '\\S', description }) as const
 
+const heading = (description: string) => line(`${description} It cannot hold a line break, or a space followed by {", which starts a heading's attributes in the stored Markdown.`)
+
 const drawing = {
   oneOf: [
     {
@@ -96,7 +98,7 @@ const drawing = {
     {
       type: 'object',
       description: 'The change in use: the output a caller gets, a caller written against the new API, a command and what it prints, or Markdown as it reads.',
-      properties: { kind: { const: 'example' }, language: line('A highlighter language, such as ts, json, sh, md, or text.'), code: line('The example.') },
+      properties: { kind: { const: 'example' }, language: line('A highlighter language, such as ts, json, sh, md, or text: one word that does not start with ~ or {.'), code: line('The example.') },
       required: ['kind', 'language', 'code'],
       additionalProperties: false,
     },
@@ -111,9 +113,9 @@ const longestEvidence = 100
 
 const ideas = (description: string) => ({ type: 'array', minItems: 1, items: { $ref: '#/$defs/idea' }, description }) as const
 
-const goal = (description: string) => ({ type: 'string', pattern: '\\S', maxLength: longestGoal, description: `${description} One plain sentence of at most ${longestGoal} characters, such as "You spend less time reviewing agents' work". Never how it is reached.` }) as const
+const goal = (description: string) => ({ type: 'string', pattern: '\\S', maxLength: longestGoal, description: `${description} One plain sentence on one line, of at most ${longestGoal} characters, such as "You spend less time reviewing agents' work". Never how it is reached.` }) as const
 
-const problemTitle = line('The Problem in one plain sentence, as you would say it to a colleague, such as "A buyer can\'t retry a failed payment". Never a chain such as "X, so you Y".')
+const problemTitle = heading('The Problem in one plain sentence, as you would say it to a colleague, such as "A buyer can\'t retry a failed payment". Never a chain such as "X, so you Y".')
 
 const problemIdeas = ideas('The Problem from the user’s side, one idea at a time. The first idea is the big idea: whom it stops and what it costs them, through a Capability or the Architecture. Then what breaks today, with the code or output that shows it.')
 
@@ -122,7 +124,7 @@ const defs = {
   idea: {
     type: 'object',
     properties: {
-      idea: { type: 'string', pattern: '\\S', maxLength: longestIdea, description: `One idea in short, plain sentences, at most ${longestIdea} characters. Markdown. It says what the drawing under it means. A list holds at most 4 items of one kind, and steps in order are numbered or a diagram.` },
+      idea: { type: 'string', pattern: '\\S', maxLength: longestIdea, description: `One idea in short, plain sentences, at most ${longestIdea} characters. Markdown. It says what the drawing under it means. A list holds at most 4 items of one kind, and steps in order are numbered or a diagram. It cannot start or end with a line break, and no line starts with ~~~. Fence code with \`\`\` and close each block. Outside a code block, no line starts with # and a space, and no two blank lines come in a row.` },
       drawing: { $ref: '#/$defs/drawing' },
     },
     required: ['idea'],
@@ -131,13 +133,13 @@ const defs = {
   change: {
     type: 'object',
     properties: {
-      title: line('What changed for the user, in one plain sentence, such as "A failed payment now stays open for a retry".'),
+      title: heading('What changed for the user, in one plain sentence, such as "A failed payment now stays open for a retry".'),
       drawing: { $ref: '#/$defs/drawing' },
       evidence: {
         type: 'array',
         minItems: 1,
         maxItems: 3,
-        items: { type: 'string', pattern: '\\S', maxLength: longestEvidence, description: `What you ran and whether it showed the change, at most ${longestEvidence} characters, such as "Reproduced live: one press opens the Solution".` },
+        items: { type: 'string', pattern: '\\S', maxLength: longestEvidence, description: `What you ran and whether it showed the change, on one line of at most ${longestEvidence} characters, such as "Reproduced live: one press opens the Solution".` },
         description: 'How you know it works.',
       },
     },
@@ -147,7 +149,7 @@ const defs = {
   solution: {
     type: 'object',
     properties: {
-      title: line('The Solution in one plain sentence, such as "A failed payment stays open for a retry".'),
+      title: heading('The Solution in one plain sentence, such as "A failed payment stays open for a retry".'),
       precedent: { type: 'string', description: 'The established tool or language that does it this way.' },
       ideas: ideas('The Solution, one idea at a time, each with the drawing that shows it. The first idea is the big idea: what the user can do after it. Never an idea that lists or repeats the others.'),
       problems: { type: 'array', items: { $ref: '#/$defs/problem' }, description: 'Smaller Problems this Solution raises, each with its own Solution.' },
@@ -169,7 +171,7 @@ const defs = {
   question: {
     type: 'object',
     properties: {
-      title: line('One product or Capability question. Never a technical one.'),
+      title: heading('One product or Capability question. Never a technical one.'),
       why: line('What the answer unlocks, and what waits without it.'),
     },
     required: ['title', 'why'],
@@ -180,7 +182,7 @@ const defs = {
 export const proposalSchema = {
   type: 'object',
   properties: {
-    title: line('The proposal in one line, clear on its own.'),
+    title: heading('The proposal in one line, clear on its own.'),
     goal: goal('The outcome the user wants.'),
     problems: { type: 'array', minItems: 1, items: { $ref: '#/$defs/problem' }, description: 'The Problems that block the goal, biggest first.' },
   },
@@ -191,7 +193,7 @@ export const proposalSchema = {
 export const optionsSchema = {
   type: 'object',
   properties: {
-    title: line('The choice in one line, clear on its own.'),
+    title: heading('The choice in one line, clear on its own.'),
     goal: goal('The outcome the user wants.'),
     problem: {
       type: 'object',
@@ -208,7 +210,7 @@ export const optionsSchema = {
 export const reportSchema = {
   type: 'object',
   properties: {
-    title: line('What was done, in one line, clear on its own.'),
+    title: heading('What was done, in one line, clear on its own.'),
     goal: goal('The outcome the user wanted.'),
     changes: {
       type: 'array',

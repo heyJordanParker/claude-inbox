@@ -5,11 +5,11 @@ import type { List, Paragraph } from '../node_modules/@cmodjs/core/ui/markdown.j
 
 export function itemLinks(source: string, items: string): string[] {
   const prefix = `file://${items}/`
-  return [...source.matchAll(/\]\(([^)\s]+)\)/g)].map(([, href]) => href ?? '').filter((href) => href.startsWith(prefix) && href.endsWith('.json'))
+  return [...source.matchAll(/\]\(([^)\s]+)\)/g)].map(([, href]) => href ?? '').filter((href) => href.startsWith(prefix) && href.endsWith('.md'))
 }
 
 export function idOfLink(href: string, items: string): string {
-  return href.slice(`file://${items}/`.length, -'.json'.length)
+  return href.slice(`file://${items}/`.length, -'.md'.length)
 }
 
 export function LinkedBlock({ props, items, onOpen }: { readonly props: StyleProps<typeof Paragraph> | StyleProps<typeof List>; readonly items: string; readonly onOpen: (id: string) => void }): RenderElement {

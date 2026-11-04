@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { viewingAfterAnswer, type Given } from '../../../src/items/answers.js'
 import { unfollowedWarning } from '../../../src/items/heard.js'
-import { closedItems, isInScope, isOpen, narrowestScope, nextAfter, personOf, positionLine, queue, revisionOf, scopes, shownOf, unseenOf, withAgents, type Item, type Note, type Person, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
+import { archive, isInScope, narrowestScope, nextAfter, personOf, positionLine, queue, revisionOf, scopes, shownOf, unseenOf, type Item, type Note, type Person, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
 import type { Folds } from '../../../src/items/tree.js'
 import { api, follow, NoAnswer, Refused, signIn, type ChangedEvent, type Connection, type Following } from './api.js'
 import { FileView, type ShownFile } from './drawing.js'
@@ -102,20 +102,30 @@ function App(): ReactNode {
 
 
   const person = data?.person ?? {}
+  const senders = data?.senders ?? {}
   const repositories = data?.repositories ?? {}
   const place = { session: session ?? '', repository: (project === null ? undefined : repositories[project]) ?? project ?? '' }
   const scopedTo = (each: Scope) => (data?.items ?? []).filter((item) => isInScope(item, each, place, repositories))
   const widest = viewing === null ? scope : narrowestScope(offered, scope, viewing, scopedTo)
   const items = scopedTo(widest)
-  const waiting = queue(items, person)
-  const shown = shownOf(items, person, viewing)
-  const next = shown === undefined ? undefined : nextAfter(waiting, shown)
+  const listed = queue(items, person, senders)
+  const shown = shownOf(items, person, senders, viewing)
+  const next = shown === undefined ? undefined : nextAfter(listed, shown)
   const latestShown = useRef<Item | undefined>(undefined)
   latestShown.current = shown
+  const itemPane = useRef<HTMLElement>(null)
+  const shownBefore = useRef<string | undefined>(undefined)
+  const shownId = shown?.id
 
   useEffect(() => {
-    document.title = waiting.length === 0 ? 'Inbox' : `(${waiting.length}) Inbox`
-  }, [waiting.length])
+    if (shownId === undefined) return
+    if (shownBefore.current !== undefined && shownBefore.current !== shownId) itemPane.current?.scrollIntoView({ block: 'start' })
+    shownBefore.current = shownId
+  }, [shownId])
+
+  useEffect(() => {
+    document.title = listed.length === 0 ? 'Inbox' : `(${listed.length}) Inbox`
+  }, [listed.length])
 
   useEffect(() => {
     if (shown === undefined || viewedInPath() === shown.id) return
@@ -194,7 +204,7 @@ function App(): ReactNode {
         .then(({ person: fresh, isFollowed }) => {
           remember(fresh)
           setEditing(null)
-          setViewing(viewingAfterAnswer(given, item.id, viewing))
+          setViewing((now) => viewingAfterAnswer(given, item.id, now))
           if (!isFollowed) notify({ tone: 'warning', ...unfollowedWarning(item) })
           return true
         })
@@ -253,21 +263,20 @@ function App(): ReactNode {
         <List
           scopes={offered}
           scope={widest}
-          openIn={(each) => scopedTo(each).filter((item) => isOpen(item, personOf(person, item))).length}
+          countIn={(each) => queue(scopedTo(each), person, senders).length}
           onScope={(each) => {
             setScope(each)
             setViewing(null)
           }}
-          waiting={waiting}
-          withAgents={withAgents(items, person)}
-          closed={closedItems(items, person).map(({ item }) => item)}
+          listed={listed}
+          archived={archive(items, person, senders)}
           person={person}
-          senders={data?.senders ?? {}}
+          senders={senders}
           shownId={shown?.id}
           onView={(id) => view(id)}
         />
       </div>
-      <main className="app__item">
+      <main ref={itemPane} className="app__item">
         {data === undefined ? (
           <p className="part__aside">{signedOut === undefined ? 'Reading the inbox…' : ''}</p>
         ) : file !== null ? (
@@ -280,7 +289,7 @@ function App(): ReactNode {
             item={shown}
             person={personOf(person, shown)}
             senders={data.senders}
-            place={positionLine(waiting, shown, personOf(person, shown), Date.now())}
+            place={positionLine(listed, shown, personOf(person, shown), Date.now())}
             next={next}
             folds={folds}
             editing={editing}

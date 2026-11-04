@@ -1,7 +1,7 @@
 import { fs, messageOf, Note, process, Prompt, sessions, type Mod } from '../node_modules/@cmodjs/core/mod.js'
 import { advanced, marksIn, unheard, type Told } from './items/heard.js'
 import { isInScope, isUnnamed, narrowestScope, personOf, repositoryOf, scopes, senderOf, sendersFor, sendersOf, type Author, type Item, type Person, type Scope, type Sender } from './items/item.js'
-import { createItem, deliveryStart, readerOf, storeIn, updateItem, type Reader, type Reread, type Store } from './items/store.js'
+import { createItem, deliveryStart, readerOf, storeIn, updateItem, type Check, type Reader, type Reread, type Store } from './items/store.js'
 import type { InboxState } from './state.js'
 
 export function author(): Author {
@@ -96,14 +96,14 @@ export function widenTo(mod: Mod<InboxState>, id: string): void {
   mod.state.session.scope = narrowestScope(scopes, mod.state.session.scope, id, (scope) => scoped(mod, scope))
 }
 
-export async function create(mod: Mod<InboxState>, title: string, build: (id: string) => Item): Promise<Item> {
-  const item = await createItem(storeOf(mod), title, build)
+export async function create(mod: Mod<InboxState>, title: string, build: (id: string) => Item, check: Check): Promise<Item> {
+  const item = await createItem(storeOf(mod), title, build, check)
   remember(mod, [item])
   return item
 }
 
-export async function change(mod: Mod<InboxState>, id: string, update: (fresh: Item, person: Person) => Item): Promise<Item> {
-  const item = await updateItem(storeOf(mod), id, update)
+export async function change(mod: Mod<InboxState>, id: string, update: (fresh: Item, person: Person) => Item, check?: Check): Promise<Item> {
+  const item = await updateItem(storeOf(mod), id, update, check)
   remember(mod, [item])
   return item
 }
@@ -112,10 +112,6 @@ export function find(mod: Mod<InboxState>, id: string): Item {
   const item = mod.state.memory.items.find((each) => each.id === id)
   if (item === undefined) throw new Error(`The inbox has nothing with the id ${id}. Call read with no id to list what is open.`)
   return item
-}
-
-export async function runningSessions(): Promise<ReadonlySet<string>> {
-  return new Set([sessions.current.id, ...(await sessions.list({ running: true, everyProject: true })).map((each) => each.id)])
 }
 
 const deliveryStarts = new WeakMap<Mod<InboxState>, string>()

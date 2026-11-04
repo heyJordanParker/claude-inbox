@@ -20,6 +20,8 @@ const retryMs = [500, 1000, 2000, 4000]
 
 const steadyRetryMs = 5000
 
+const reconnectingAfterMs = 5000
+
 const movedMs = 60_000
 
 const noAnswer = 'The inbox server did not answer. Once it reconnects, this item shows whether your answer was recorded.'
@@ -156,7 +158,8 @@ export function follow(
         if (reopening.signal.aborted) continue
       }
       downSince ??= Date.now()
-      handlers.onConnection(Date.now() - downSince >= movedMs ? 'moved' : 'reconnecting')
+      const down = Date.now() - downSince
+      if (down >= reconnectingAfterMs) handlers.onConnection(down >= movedMs ? 'moved' : 'reconnecting')
       await waited(failures)
       failures += 1
     }

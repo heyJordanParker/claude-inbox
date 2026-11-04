@@ -3,9 +3,10 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { actionsOf, answer, dropNote, markRead, Moved, NotOffered, setNote, skip, viewingAfterAnswer } from '../src/items/answers.js'
 import { changeCounts, diagramKindOf, diffOf, drawingLabel, kindOf, statsOf, treeOf } from '../src/items/drawings.js'
 import { format } from '../src/items/formats.js'
-import { advanced, isFollowed, marksIn, unheard } from '../src/items/heard.js'
-import { ago, closedItems, closedWord, closingLines, narrowestScope, personOf, repositoryOf, scopes, shownOf, statusOf, type CodeDiff, type Content, type Item, type Note, type Person, type Run, type Scope } from '../src/items/item.js'
-import { createItem, itemPath, moveIntoPersonFiles, personPath, readerOf, readItems, readPerson, storeIn, updateItem, type Disk } from '../src/items/store.js'
+import { advanced, marksIn, unheard } from '../src/items/heard.js'
+import { ago, archive, cardStatusOf, closingLines, closingOf, isArchived, isFollowed, narrowestScope, personOf, positionLine, queue, repositoryOf, scopes, shownOf, statusOf, type CodeDiff, type Content, type Item, type Note, type Person, type Run, type Scope, type Senders } from '../src/items/item.js'
+import { parsePerson, personMarkdown } from '../src/items/markdown.js'
+import { convertJsonFiles, createItem, itemPath, personPath, readerOf, readItems, readPerson, storeIn, updateItem, type Disk } from '../src/items/store.js'
 import { foldKey, folds, isChanged, isUnchanged, opensAt, rootsOf, summaryOf, unrevised, type Revised } from '../src/items/tree.js'
 
 const core = new URL('../src/items/', import.meta.url).pathname
@@ -90,21 +91,84 @@ test('an item a view opens, open or closed, widens the scope to the narrowest on
   expect(narrowestScope(scopes, 'session', 'missing', itemsIn)).toBe('session')
 })
 
-test('every closed item lists newest first, marked with what closed it, and opens with its answer', () => {
+test('every closed item is in the Archive newest first, marked with what closed it, and opens with its answer', () => {
   const rejected = itemOf(proposal, 'rejected')
   const withdrawn = { ...itemOf(question, 'withdrawn'), withdrawal: { kind: 'withdraw' as const, words: 'Moved to billing', revision: 0, by: origin, at: '2026-10-22T10:20:00.000Z' } }
   const open = itemOf(question, 'open')
   const person = { rejected: { ...nobody(rejected), answers: [{ kind: 'reject' as const, revision: 0, at: '2026-10-22T10:10:00.000Z', corrections: [{ path: 'p0', revision: 0, target: 'Problem 1', words: 'Wrong problem' }] }] } }
+  const linesOf = (item: Item) => {
+    const closing = closingOf(item, personOf(person, item))
+    return closing === undefined ? [] : closingLines(item, closing, { planner: { title: 'schema planning' } })
+  }
 
-  const closed = closedItems([rejected, withdrawn, open], person)
+  const archived = archive([rejected, withdrawn, open], person, {})
 
-  expect(closed.map(({ item, closing }) => [item.id, closedWord(closing)])).toEqual([
+  expect(archived.map((item) => [item.id, cardStatusOf(item, personOf(person, item), {})?.word])).toEqual([
     ['withdrawn', 'withdrawn'],
     ['rejected', 'rejected'],
   ])
-  expect(closed.map(({ item, closing }) => closingLines(item, closing, { planner: { title: 'schema planning' } }))).toEqual([['schema planning withdrew it: Moved to billing'], ['✎ Problem 1: Wrong problem']])
-  expect(shownOf([open, rejected], person, 'rejected')?.id).toBe('rejected')
+  expect(archived.map(linesOf)).toEqual([['schema planning withdrew it: Moved to billing'], ['✎ Problem 1: Wrong problem']])
+  expect(queue([rejected, withdrawn, open], person, {}).map((item) => item.id)).toEqual(['open'])
+  expect(shownOf([open, rejected], person, {}, 'rejected')?.id).toBe('rejected')
   expect(actionsOf(rejected, personOf(person, rejected), { hasNext: true, isCommenting: false })).toEqual([])
+})
+
+const stopped: Senders = { planner: { title: 'schema planning', isRunning: false } }
+
+const running: Senders = { planner: { title: 'schema planning', isRunning: true } }
+
+test('an open item whose sessions all stopped is in the Archive, marked agent closed, and still opens with its answer buttons', () => {
+  const item = itemOf(question, 'courses')
+
+  expect(queue([item], {}, stopped)).toEqual([])
+  expect(archive([item], {}, stopped)).toEqual([item])
+  expect(cardStatusOf(item, nobody(item), stopped)).toEqual({ word: 'agent closed', tone: 'archived' })
+  expect(positionLine([], item, nobody(item), Date.parse('2026-10-22T10:05:00.000Z'))).toBe('agent closed · 5m ago')
+  expect(rows(item, nobody(item)).map(([id]) => id)).toContain('answer')
+})
+
+test('an open item is in the list while any of its sessions runs, so it comes back from the Archive when its session resumes', () => {
+  const item = itemOf(question, 'courses')
+  const followed = { ...item, subscribers: [...item.subscribers, { session: 'reviewer', since: '2026-10-22T10:01:00.000Z' }] }
+
+  expect(queue([item], {}, running)).toEqual([item])
+  expect(archive([item], {}, running)).toEqual([])
+  expect(cardStatusOf(item, nobody(item), running)).toEqual({ word: 'new', tone: 'unseen' })
+  expect(queue([followed], {}, { ...stopped, reviewer: { title: 'review', isRunning: true } })).toEqual([followed])
+})
+
+test('an open item stays in the list while the inbox does not know whether its sessions run', () => {
+  const item = itemOf(question, 'courses')
+
+  expect(queue([item], {}, {})).toEqual([item])
+  expect(queue([item], {}, { planner: { title: 'schema planning' } })).toEqual([item])
+  expect(archive([item], {}, {})).toEqual([])
+})
+
+test('an item with requested changes is in the list, not the Archive, marked changes requested', () => {
+  const item = itemOf(proposal, 'match')
+  const person = { match: { ...nobody(item), lastRead: 0, answers: [{ kind: 'correct' as const, revision: 0, at: '2026-10-22T10:10:00.000Z', corrections: [note('p0', 'Say who writes the default')] }] } }
+
+  expect(queue([item], person, running)).toEqual([item])
+  expect(archive([item], person, running)).toEqual([])
+  expect(cardStatusOf(item, personOf(person, item), running)).toEqual({ word: 'changes requested', tone: 'requested' })
+})
+
+test('the item shown by default is the first in the list that needs the person, past one waiting on requested changes and one in the Archive', () => {
+  const requested = itemOf(proposal, 'requested')
+  const ended = { ...itemOf(question, 'ended'), origin: { session: 'ended' }, subscribers: [{ session: 'ended', since: '2026-10-22T10:00:00.000Z' }] }
+  const fresh = itemOf(question, 'fresh')
+  const person = {
+    requested: { ...nobody(requested), queuedAt: '2026-10-22T10:00:00.000Z', answers: [{ kind: 'correct' as const, revision: 0, at: '2026-10-22T10:10:00.000Z', corrections: [note('p0', 'Say more')] }] },
+    ended: { ...nobody(ended), queuedAt: '2026-10-22T10:01:00.000Z' },
+    fresh: { ...nobody(fresh), queuedAt: '2026-10-22T10:02:00.000Z' },
+  }
+  const senders = { ...running, ended: { title: 'ended', isRunning: false } }
+
+  expect(queue([requested, ended, fresh], person, senders).map((item) => item.id)).toEqual(['requested', 'fresh'])
+  expect(shownOf([requested, ended, fresh], person, senders, null)?.id).toBe('fresh')
+  expect(shownOf([requested, ended], person, senders, null)?.id).toBe('requested')
+  expect(shownOf([ended], person, senders, null)).toBeUndefined()
 })
 
 test('no file in src/items imports @cmodjs/core, so a program outside Claude Code runs the same core', () => {
@@ -132,29 +196,30 @@ test('a reread with the last stamps reads only the item a writer changed', async
   const reread = await readItems(store, stamps)
 
   expect(reread.items.map((each) => each.id)).toEqual(['do-we-want-courses'])
-  expect(disk.reads.filter((path) => path.startsWith('/data/items/'))).toEqual(['/data/items/do-we-want-courses.json'])
+  expect(disk.reads.filter((path) => path.startsWith('/data/items/'))).toEqual(['/data/items/do-we-want-courses.md'])
 })
 
-test('an item file that parses but does not upgrade is skipped as unreadable, and the other items still read', async () => {
+test('an item file that does not read as an item is skipped as unreadable, and the other items still read', async () => {
   const { disk, store, item } = await filed(proposal)
-  await disk.write(itemPath(store, 'broken'), JSON.stringify({ id: 'broken', format: 3 }))
+  await disk.write(itemPath(store, 'broken'), '---\nformat: 7\n---\n# Half written\n')
 
   const read = await readItems(store)
 
   expect(read.items.map((each) => each.id)).toEqual([item.id])
-  expect(read.unreadable).toEqual(['broken'])
+  expect(read.unreadable).toEqual([{ id: 'broken', reason: "items/broken.md's front matter has no valid kind: undefined" }])
 })
 
-test('the move into person files skips a file it cannot read and moves the rest', async () => {
+test('the conversion to Markdown leaves a JSON file it cannot read, names it, and converts the rest', async () => {
   const disk = memoryDisk()
   const store = storeIn('/data', disk)
   const stored = { ...itemOf(proposal, 'match'), format: 5, status: 'open', lastRead: 0, queuedAt: '2026-10-22T10:05:00.000Z', answers: [] }
-  await disk.write(itemPath(store, 'match'), JSON.stringify(stored))
-  await disk.write(itemPath(store, 'broken'), JSON.stringify({ id: 'broken', format: 3 }))
+  await disk.write('/data/items/match.json', JSON.stringify(stored))
+  await disk.write('/data/items/broken.json', JSON.stringify({ id: 'broken', format: 3 }))
 
-  expect(await moveIntoPersonFiles(store, {})).toBe(1)
+  expect(await convertJsonFiles(store, {}, async (path) => disk.remove(path))).toEqual({ converted: 1, skipped: ['items/broken.json, which does not convert: it holds no revisions'] })
   expect(await disk.exists(personPath(store, 'match'))).toBe(true)
-  expect(await disk.read(itemPath(store, 'broken'))).toBe(JSON.stringify({ id: 'broken', format: 3 }))
+  expect([await disk.exists('/data/items/match.json'), await disk.exists(itemPath(store, 'match'))]).toEqual([false, true])
+  expect(await disk.read('/data/items/broken.json')).toBe(JSON.stringify({ id: 'broken', format: 3 }))
 })
 
 test('a reread names the item and person files deleted since the last read, and a read of every file names them too', async () => {
@@ -221,13 +286,13 @@ test('a reread of person files reads only the one a view wrote, and the item cha
 
   expect(reread[0].items.map((each) => each.id)).toEqual(['do-we-want-courses'])
   expect(reread[1].person['do-we-want-courses']?.notes.map((each) => each.words)).toEqual(['Ask about paid courses'])
-  expect(disk.reads.filter((path) => path.startsWith('/data/person/'))).toEqual(['/data/person/do-we-want-courses.json'])
+  expect(disk.reads.filter((path) => path.startsWith('/data/person/'))).toEqual(['/data/person/do-we-want-courses.md'])
 })
 
 test('a new item never takes the id of a person file whose item file is gone, so it starts with no old answer', async () => {
   const disk = memoryDisk()
   const store = storeIn('/data', disk)
-  await disk.write(personPath(store, 'do-we-want-courses'), JSON.stringify({ notes: [], answers: [{ kind: 'reject', revision: 0, at: '2026-10-22T10:10:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:00:00.000Z' }))
+  await disk.write(personPath(store, 'do-we-want-courses'), personMarkdown({ notes: [], answers: [{ kind: 'reject', revision: 0, at: '2026-10-22T10:10:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:00:00.000Z' }))
 
   const item = await createItem(store, question.title, (id) => itemOf(question, id))
 
@@ -264,7 +329,7 @@ test('an answer carries the notes as corrections and empties them in one write o
   expect(person.notes).toEqual([])
   expect(person.lastRead).toBe(0)
   expect(person.answers.map(({ kind, corrections, revision }) => ({ kind, corrections, revision }))).toEqual([{ kind: 'approve', corrections: [{ path: 'p0', target: 'Problem 1: A full match still demands a default', words: 'Say who writes the default', revision: 0 }], revision: 0 }])
-  expect(JSON.parse(await disk.read(personPath(store, item.id)))).toEqual(person)
+  expect(parsePerson(item.id, await disk.read(personPath(store, item.id)))).toEqual(person)
   expect(statusOf(item, person)).toBe('answered')
 })
 
@@ -347,16 +412,29 @@ test("an item's status is the person's answer or the agent's withdrawal, whichev
   expect(statusOf(withdrawn, answeredAt('2026-10-22T11:01:00.000Z'))).toBe('withdrawn')
 })
 
-test('an answered item is followed while a subscriber runs, and counts as followed with the failure logged when the running sessions cannot be listed', async () => {
-  const { item } = await filed(proposal)
-  const logs: string[] = []
-  const log = (line: string) => void logs.push(line)
+test('a rejection closes only the revision it answered, so the next revision is open, listed as changed, and keeps the rejection', async () => {
+  const { store, item } = await filed(proposal)
+  const rejected = await answer(store, item.id, 0, { kind: 'reject' })
+  const revised = await updateItem(store, item.id, (fresh) => ({ ...fresh, revisions: [...fresh.revisions, { ...origin, content: { ...proposal, goal: 'Enums ship with no boilerplate' }, at: '2026-10-22T11:00:00.000Z' }] }))
+  const { person } = await readPerson(store)
+  const kept = personOf(person, revised)
 
-  expect(await isFollowed(item, async () => new Set([item.subscribers[0]?.session ?? '']), log)).toBe(true)
-  expect(await isFollowed(item, async () => new Set(['someone-else']), log)).toBe(false)
-  expect(logs).toEqual([])
-  expect(await isFollowed(item, () => Promise.reject(new Error('cmod history sessions failed')), log)).toBe(true)
-  expect(logs).toEqual([`The answer to ${item.id} is recorded, but the running sessions could not be listed, so no warning says whether a session hears it: cmod history sessions failed`])
+  expect(cardStatusOf(item, rejected, running)).toEqual({ word: 'rejected', tone: 'archived' })
+  expect(statusOf(revised, kept)).toBe('open')
+  expect(queue([revised], person, running)).toEqual([revised])
+  expect(cardStatusOf(revised, kept, running)).toEqual({ word: 'changed', tone: 'unseen' })
+  expect(kept.answers.map(({ kind, revision }) => ({ kind, revision }))).toEqual([{ kind: 'reject', revision: 0 }])
+  expect(cardStatusOf(revised, await answer(store, item.id, 1, { kind: 'reject' }), running)).toEqual({ word: 'rejected', tone: 'archived' })
+})
+
+test('one read of the senders says both whether an item is archived and whether a running session follows it, and a session not read yet counts as running', () => {
+  const item = itemOf(question, 'courses')
+  const unsubscribed = { ...item, subscribers: [] }
+
+  expect([isArchived(item, nobody(item), stopped), isFollowed(item, stopped)]).toEqual([true, false])
+  expect([isArchived(item, nobody(item), running), isFollowed(item, running)]).toEqual([false, true])
+  expect([isArchived(item, nobody(item), {}), isFollowed(item, {})]).toEqual([false, true])
+  expect([isArchived(unsubscribed, nobody(unsubscribed), running), isFollowed(unsubscribed, running)]).toEqual([true, false])
 })
 
 test('a note names its part, replaces the note on that part and revision, and an empty one drops it', async () => {
@@ -413,25 +491,27 @@ test('reading an item marks the revision the person saw, a second read writes no
   }
 })
 
-test('each move writes a person file for an old item that has none, rewrites the item at the current format, and adds an answer an old build wrote after an earlier move', async () => {
+test('each conversion writes a person file for an old item that has none, writes the item as Markdown at the current format, and adds an answer an old build wrote after an earlier conversion', async () => {
   const disk = memoryDisk()
   const store = storeIn('/data', disk)
+  const remove = async (path: string) => disk.remove(path)
   const first = { kind: 'approve', revision: 0, by: 'person', at: '2026-10-22T10:10:00.000Z' }
   const stored = { ...itemOf(proposal, 'match'), format: 5, status: 'answered', lastRead: 0, queuedAt: '2026-10-22T10:05:00.000Z', answers: [first] }
-  await disk.write(itemPath(store, 'match'), JSON.stringify(stored))
+  await disk.write('/data/items/match.json', JSON.stringify(stored))
   const notes = { match: [note('', 'Ship it')] }
 
-  expect(await moveIntoPersonFiles(store, notes)).toBe(1)
-  expect(JSON.parse(await disk.read(personPath(store, 'match')))).toEqual({ notes: [note('', 'Ship it')], answers: [{ kind: 'approve', revision: 0, at: '2026-10-22T10:10:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:05:00.000Z' })
-  const rewritten = JSON.parse(await disk.read(itemPath(store, 'match'))) as Record<string, unknown>
-  expect([rewritten['format'], 'answers' in rewritten, 'lastRead' in rewritten, rewritten['updatedAt']]).toEqual([format, false, false, stored.updatedAt])
+  expect(await convertJsonFiles(store, notes, remove)).toEqual({ converted: 1, skipped: [] })
+  expect(parsePerson('match', await disk.read(personPath(store, 'match')))).toEqual({ notes: [note('', 'Ship it')], answers: [{ kind: 'approve', revision: 0, at: '2026-10-22T10:10:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:05:00.000Z' })
+  const [rewritten] = (await readItems(store)).items
+  expect([rewritten?.format, rewritten?.updatedAt]).toEqual([format, stored.updatedAt])
+  expect(await disk.exists('/data/items/match.json')).toBe(false)
   expect((await disk.read(store.changed)).endsWith(' match\n')).toBe(true)
-  expect(await moveIntoPersonFiles(store, notes)).toBe(0)
+  expect(await convertJsonFiles(store, notes, remove)).toEqual({ converted: 0, skipped: [] })
 
   const later = { kind: 'reject', words: 'Not now', revision: 0, by: 'person', at: '2026-10-22T11:00:00.000Z' }
-  await disk.write(itemPath(store, 'match'), JSON.stringify({ ...stored, answers: [first, later] }))
-  expect(await moveIntoPersonFiles(store, notes)).toBe(1)
-  expect((JSON.parse(await disk.read(personPath(store, 'match'))) as Person).answers.map((each) => each.at)).toEqual([first.at, later.at])
+  await disk.write('/data/items/match.json', JSON.stringify({ ...stored, answers: [first, later] }))
+  expect(await convertJsonFiles(store, notes, remove)).toEqual({ converted: 1, skipped: [] })
+  expect(parsePerson('match', await disk.read(personPath(store, 'match'))).answers.map((each) => each.at)).toEqual([first.at, later.at])
 
   const [item] = (await readItems(store)).items
   const person = (await readPerson(store)).person['match']

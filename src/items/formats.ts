@@ -62,6 +62,12 @@ function shippedOf(problem: Problem): Shipped {
   return { title: problem.solution?.title ?? problem.title, ...(drawing === undefined ? {} : { drawing }), evidence: ideas.flatMap((idea) => idea.evidence ?? []) }
 }
 
+function changesOf(stored: Stored): Shipped[] {
+  if (!Array.isArray(stored['ideas'])) return [stored as unknown as Shipped]
+  const ideas = stored['ideas'] as readonly (Idea & { readonly evidence?: readonly string[] })[]
+  return [{ title: String(stored['title']), evidence: [] }, ...ideas.map(({ idea, drawing, evidence }) => ({ title: idea, ...(drawing === undefined ? {} : { drawing }), evidence: evidence ?? [] }))]
+}
+
 function contentOf(stored: Stored): Content {
   const kind = stored['kind']
   if (kind === 'proposal') return { ...(stored as unknown as Content & { kind: 'proposal' }), problems: (stored['problems'] as readonly Stored[]).map(problemOf) }
@@ -71,7 +77,7 @@ function contentOf(stored: Stored): Content {
   }
   if (kind === 'report') {
     const { outcome: _, reached: __, problems, changes, ...rest } = stored
-    const shipped = Array.isArray(changes) ? (changes as readonly Shipped[]) : ((problems as readonly Stored[] | undefined) ?? []).map(problemOf).map(shippedOf)
+    const shipped = Array.isArray(changes) ? (changes as readonly Stored[]).flatMap(changesOf) : ((problems as readonly Stored[] | undefined) ?? []).map(problemOf).map(shippedOf)
     return { ...(rest as unknown as Content & { kind: 'report' }), changes: shipped }
   }
   return stored as unknown as Content
@@ -101,7 +107,7 @@ function withdrawalOf(stored: Stored): Withdrawal | undefined {
   }
 }
 
-export function personFrom(stored: Stored, notes: readonly Note[]): Person {
+function personFrom(stored: Stored, notes: readonly Note[]): Person {
   const revisions = stored['revisions'] as readonly Stored[]
   return {
     notes,
@@ -122,20 +128,66 @@ function drawingsOf(value: unknown): unknown {
 
 const firstWithoutPerson = 6
 
-export function holdsPersonFields(stored: Stored): boolean {
+function holdsPersonFields(stored: Stored): boolean {
   return typeof stored['format'] !== 'number' || stored['format'] < firstWithoutPerson
 }
 
 function withoutPerson(stored: Stored): Stored {
-  const revisions = (stored['revisions'] as readonly Stored[]).map((revision) => ({ ...revision, content: drawingsOf(contentOf(revision['content'] as Stored)) }))
   const { answers: _, lastRead: __, queuedAt: ___, status: ____, ...rest } = stored
   const withdrawal = withdrawalOf(stored)
-  return { ...rest, revisions, ...(withdrawal === undefined ? {} : { withdrawal }) }
+  return { ...rest, ...(withdrawal === undefined ? {} : { withdrawal }) }
 }
 
-export function upgrade(stored: Stored): Item {
-  if (stored['format'] === format) return stored as unknown as Item
-  const item = withoutPerson(stored) as unknown as Omit<Item, 'subscribers'> & { readonly subscribers: readonly (Author & { readonly since?: string })[] }
-  const filedAt = item.revisions[0]?.at ?? item.updatedAt
-  return { ...item, format, subscribers: item.subscribers.map((each) => ({ ...each, since: each.since ?? filedAt })) }
+export function authorOf({ session, agent }: Author): Author {
+  return { session, ...(agent === undefined ? {} : { agent }) }
+}
+
+type Stamped = Omit<Item, 'subscribers' | 'updatedAt' | 'withdrawal'> & {
+  readonly subscribers: readonly (Author & { readonly since?: string })[]
+  readonly updatedAt?: string
+  readonly withdrawal?: Omit<Withdrawal, 'by'> & { readonly by: Author | string }
+}
+
+function upgraded(stored: Stored): { readonly item: Item; readonly rejected?: Answer } {
+  if (!Array.isArray(stored['revisions'])) throw new Error('it holds no revisions')
+  const item = (stored['format'] === format ? stored : withoutPerson(stored)) as unknown as Stamped
+  const [first] = item.revisions
+  const last = item.revisions.at(-1)
+  if (first === undefined || last === undefined) throw new Error('it holds no revisions')
+  const { withdrawal } = item
+  const byAgent = withdrawal !== undefined && typeof withdrawal.by === 'object' ? { ...withdrawal, by: authorOf(withdrawal.by) } : undefined
+  return {
+    item: {
+      format,
+      id: item.id,
+      kind: item.kind,
+      project: item.project,
+      origin: authorOf(item.origin),
+      subscribers: item.subscribers.map((each) => ({ ...authorOf(each), since: each.since ?? first.at })),
+      revisions: item.revisions.map((revision) => ({ ...authorOf(revision), content: drawingsOf(contentOf(revision.content as unknown as Stored)) as Content, at: revision.at })),
+      ...(byAgent === undefined ? {} : { withdrawal: byAgent }),
+      updatedAt: item.updatedAt ?? withdrawal?.at ?? last.at,
+    },
+    ...(withdrawal === undefined || byAgent !== undefined ? {} : { rejected: { kind: 'reject', ...(withdrawal.words === '' ? {} : { words: withdrawal.words }), revision: withdrawal.revision, at: withdrawal.at } }),
+  }
+}
+
+export function upgradePerson(stored: Stored): Person {
+  const person = stored as unknown as Person & { readonly answers: readonly (Answer & { readonly corrections?: readonly (Omit<Note, 'revision'> & { readonly revision?: number })[] })[] }
+  return { ...person, answers: person.answers.map((answer) => (answer.corrections === undefined ? answer : { ...answer, corrections: answer.corrections.map((note) => ({ ...note, revision: note.revision ?? answer.revision })) })) }
+}
+
+export function mergedPerson(kept: Person | undefined, added: Person | undefined): Person | undefined {
+  if (kept === undefined || added === undefined) return kept ?? added
+  const answers = added.answers.filter((answer) => !kept.answers.some((each) => each.at === answer.at))
+  const notes = added.notes.filter((note) => !kept.notes.some((each) => each.path === note.path && each.revision === note.revision))
+  if (answers.length === 0 && notes.length === 0) return kept
+  return { ...kept, notes: [...kept.notes, ...notes], answers: [...kept.answers, ...answers].sort((a, b) => a.at.localeCompare(b.at)) }
+}
+
+export function converted(stored: Stored, storedPerson: Stored | undefined, notes: readonly Note[]): { readonly item: Item; readonly person: Person | undefined } {
+  const { item, rejected } = upgraded(stored)
+  const fromItem = holdsPersonFields(stored) ? personFrom(stored, notes) : undefined
+  const closed = rejected === undefined ? undefined : { notes: [], answers: [rejected], lastRead: -1, queuedAt: item.revisions[0]?.at ?? item.updatedAt }
+  return { item, person: mergedPerson(mergedPerson(storedPerson === undefined ? undefined : upgradePerson(storedPerson), fromItem), closed) }
 }
