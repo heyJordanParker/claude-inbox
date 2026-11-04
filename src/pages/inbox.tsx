@@ -4,7 +4,7 @@ import { Box, Button, Text } from '../../node_modules/@cmodjs/core/ui/elements.j
 import { personIn, scoped, senderIn } from '../actions.js'
 import { view } from '../answers.js'
 import { chip } from '../components/chip.js'
-import { Bar, Card, ItemView, sender } from '../components/item.js'
+import { ItemView, sender } from '../components/item.js'
 import { ago, archive, cardStatusOf, cardTime, current, emptyLine, kindName, nextAfter, positionLine, queue, scopeNames, scopes, shownOf, wording, type Item } from '../items/item.js'
 import type { InboxState } from '../state.js'
 
@@ -57,25 +57,26 @@ function Cards({ mod, items, isArchived }: { readonly mod: Mod<InboxState>; read
 
 function Archive({ mod, items }: { readonly mod: Mod<InboxState>; readonly items: readonly Item[] }): RenderElement | null {
   if (items.length === 0) return null
+  const isOpen = mod.state.session.isArchiveOpen
   return (
     <Box flexDirection="column" gap={1}>
-      <Box paddingLeft={2} columnGap={1}>
-        {chip(wording.archive, 'archived')}
-        <Text dimColor>{`${items.length}`}</Text>
+      <Box paddingLeft={2}>
+        <Button plain key="archive" hover={{ inverse: true }} onPress={() => void (mod.state.session.isArchiveOpen = !isOpen)}>
+          <Text dimColor>{`${isOpen ? '▾' : '▸'} ${wording.archive} ${items.length}`}</Text>
+        </Button>
       </Box>
-      <Cards mod={mod} items={items} isArchived />
+      {isOpen ? <Cards mod={mod} items={items} isArchived /> : null}
     </Box>
   )
 }
 
 function Empty({ mod }: { readonly mod: Mod<InboxState> }): RenderElement {
   return (
-    <Card>
-      <Bar>
-        <Text bold>{emptyLine(mod.state.session.scope)}</Text>
-      </Bar>
+    <Box flexDirection="column" alignItems="center" paddingY={1}>
+      <Text bold color="success">{`✓ ${wording.inboxZero}`}</Text>
+      <Text wrap="wrap">{emptyLine(mod.state.session.scope)}</Text>
       <Text dimColor wrap="wrap">{wording.emptyHint}</Text>
-    </Card>
+    </Box>
   )
 }
 

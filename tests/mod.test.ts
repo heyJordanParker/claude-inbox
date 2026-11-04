@@ -801,13 +801,15 @@ test('every item in the list opens from the Sidebar, the sixth one included, as 
   expect(shownId(mod)).toBe(sixth?.id)
 })
 
-test('an answered item stays in the Sidebar in the Archive and opens there with its answer and no answer buttons', async () => {
+test('an answered item stays in the Sidebar in the Archive, folded under one line until it is opened, and opens there with its answer and no answer buttons', async () => {
   const mod = tested()
   const rejected = await filed(mod, 'propose', proposal)
   await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   await mod.shown.page.press(`view:${rejected.id}`)
   await mod.shown.page.press('reject')
 
+  await expect(mod.shown.page.press(`view:${rejected.id}`)).rejects.toThrow(rejected.id)
+  await mod.shown.page.press('archive')
   await mod.shown.page.press(`view:${rejected.id}`)
 
   expect(shownId(mod)).toBe(rejected.id)
@@ -1191,6 +1193,7 @@ test('an answer to a revision another session replaced is refused, and the item 
   await mod.fakes.fs.write?.(`${revisionsFolder}/courses/1.md`, revisionMarkdown(revised, 0))
   await mod.fakes.fs.write?.(`${itemsFolder}/courses.md`, itemMarkdown(revised))
   await mod.shown.page.press('scope:all')
+  await mod.shown.page.press('archive')
   await mod.shown.page.press('view:courses')
   await mod.shown.page.input('answer:courses', 'Yes')
 
@@ -1283,6 +1286,8 @@ test('an item whose sessions all ended opens from the Archive, and an answer nob
   await mod.type('/inbox')
   await mod.shown.page.press('scope:all')
   expect(shownId(mod)).toBeUndefined()
+  expect((await mod.shown.page.lines()).some((line) => line.includes('✓ Inbox zero'))).toBe(true)
+  await mod.shown.page.press('archive')
   await mod.shown.page.press('view:courses')
   await mod.shown.page.input('answer:courses', 'Yes')
 
@@ -1297,6 +1302,7 @@ test("the inbox shows this session's items, and widens to the project with its w
 
   await expect(mod.shown.page.press('view:worktree')).rejects.toThrow('view:worktree')
   await mod.shown.page.press('scope:project')
+  await mod.shown.page.press('archive')
   await mod.shown.page.press('view:worktree')
   expect(shownId(mod)).toBe('worktree')
   await expect(mod.shown.page.press('view:elsewhere')).rejects.toThrow('view:elsewhere')

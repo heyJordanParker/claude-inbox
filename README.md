@@ -85,7 +85,7 @@ A new item carries a **new** badge, and an item an agent revised after you read 
 
 Under the item, the page lists the rest as cards, like an email inbox. The list holds every open item whose agent still runs. Each card shows its kind, its status (**new**, **changed**, or **changes requested**), the session that filed it in that session's color, the time, and the title.
 
-Under the list, the **Archive** holds every item you answered or an agent withdrew, marked approved, rejected, picked, answered, done, or withdrawn. It also holds every open item that no running session follows, because its sessions closed or stopped following it, marked **agent closed**. Nothing is ever deleted. An archived item still opens, and an open one still takes your answer, which reaches its session when the session resumes. An item moves back to the list as soon as its session runs again.
+Under the list, the **Archive** folds under one line with its count, and opens when you press it. It holds every item you answered or an agent withdrew, marked approved, rejected, picked, answered, done, or withdrawn. It also holds every open item that no running session follows, because its sessions closed or stopped following it, marked **agent closed**. Nothing is ever deleted. An archived item still opens, and an open one still takes your answer, which reaches its session when the session resumes. An item moves back to the list as soon as its session runs again.
 
 The page shows this session's items: the ones it filed or follows. The chips at the top widen it to this project, which counts every worktree of the repository, or to every project, and each chip counts the items in its list, not its Archive. Only the session that files an item opens the page on it.
 

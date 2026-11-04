@@ -310,6 +310,7 @@ export const wording = {
   archive: 'Archive',
   agentClosed: 'agent closed',
   changesRequested: 'changes requested',
+  inboxZero: 'Inbox zero',
   emptyHint: "An agent's next proposal, choice, question, or report shows here as it arrives.",
 } as const
 
@@ -378,7 +379,7 @@ export function closingLines(item: Item, closing: Answer | Withdrawal, senders: 
 }
 
 export function emptyLine(scope: Scope): string {
-  return `Your inbox is empty · ${scopeNames[scope]}`
+  return `Nothing needs you in ${scopeNames[scope].toLowerCase()}.`
 }
 
 export function narrowestScope(offered: readonly Scope[], from: Scope, id: string, itemsIn: (scope: Scope) => readonly Item[]): Scope {

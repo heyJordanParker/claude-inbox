@@ -18,6 +18,7 @@ export type InboxState = {
     folds: Readonly<Record<string, boolean>>
     editing: string | null
     typed: Readonly<Record<string, string>>
+    isArchiveOpen: boolean
     file: ShownFile | null
     heard: Heard
   }
@@ -28,6 +29,6 @@ export type InboxState = {
 
 export const initialState: InboxState = {
   memory: { items: [], person: {}, repositories: {}, senders: {} },
-  session: { scope: 'session', viewing: null, folds: {}, editing: null, typed: {}, file: null, heard: {} },
+  session: { scope: 'session', viewing: null, folds: {}, editing: null, typed: {}, isArchiveOpen: false, file: null, heard: {} },
   global: { notes: {} },
 }

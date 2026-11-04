@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ago, cardStatusOf, cardTime, current, emptyLine, kindName, personOf, scopeNames, senderOf, wording, type Item, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
 import { Sender, Title } from './item.js'
 
@@ -17,24 +17,25 @@ function ItemCard({ item, isArchived, person, senders, shownId, onView }: Shared
   return (
     <li>
       <button ref={card} type="button" className="card" data-archived={isArchived} data-status={status?.tone} aria-current={isShown ? 'true' : undefined} onClick={() => onView(item.id)}>
-        <span className="card__meta">
-          <span className="chip" data-tone={isArchived ? 'archived' : 'folded'} data-kind={item.kind}>
-            {kindName(item)}
-          </span>
-          {status === undefined ? null : (
-            <span className="chip" data-tone={status.tone}>
-              {status.word}
-            </span>
-          )}
-          <time className="card__when" dateTime={at}>
-            {ago(at, Date.now())}
-          </time>
+        <span className="card__dot" aria-hidden="true" />
+        <span className="card__from" title={sender.title}>
+          <Sender {...sender} />
         </span>
+        <time className="card__when" dateTime={at}>
+          {ago(at, Date.now())}
+        </time>
         <span className="card__title">
           <Title title={current(item).title} />
         </span>
-        <span className="card__from" title={sender.title}>
-          from <Sender {...sender} />
+        <span className="card__meta">
+          <span className="card__kind" data-kind={item.kind}>
+            {kindName(item)}
+          </span>
+          {status === undefined || status.word === 'new' ? null : (
+            <span className="card__status" data-tone={status.tone}>
+              {status.word}
+            </span>
+          )}
         </span>
       </button>
     </li>
@@ -53,18 +54,26 @@ function Cards({ items, isArchived, ...shared }: Shared & { readonly items: read
 }
 
 function Archive({ items, ...shared }: Shared & { readonly items: readonly Item[] }): ReactNode {
+  const isShownInside = items.some((item) => item.id === shared.shownId)
+  const [isOpen, setOpen] = useState(isShownInside)
+  useEffect(() => {
+    if (isShownInside) setOpen(true)
+  }, [isShownInside])
   if (items.length === 0) return null
   return (
     <section className="archive" aria-label={wording.archive}>
-      <h2 className="archive__heading">
+      <button type="button" className="archive__toggle" aria-expanded={isOpen} onClick={() => setOpen(!isOpen)}>
         <svg className="archive__icon" viewBox="0 0 24 24" aria-hidden="true">
           <rect width="20" height="5" x="2" y="3" rx="1" />
           <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
           <path d="M10 12h4" />
         </svg>
         {wording.archive} <span className="list__count">{items.length}</span>
-      </h2>
-      <Cards items={items} isArchived {...shared} />
+        <svg className="archive__chevron" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+      </button>
+      {isOpen ? <Cards items={items} isArchived {...shared} /> : null}
     </section>
   )
 }
@@ -94,12 +103,14 @@ export function List({ scopes, scope, countIn, onScope, listed, archived, ...sha
 
 export function Empty({ scope }: { readonly scope: Scope }): ReactNode {
   return (
-    <article className="empty" aria-label={emptyLine(scope)}>
-      <svg className="empty__icon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-        <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-      </svg>
-      <h2 className="item__title">{emptyLine(scope)}</h2>
+    <article className="empty" aria-label={wording.inboxZero}>
+      <span className="empty__badge" aria-hidden="true">
+        <svg className="empty__icon" viewBox="0 0 24 24">
+          <path d="M20 6 9 17l-5-5" />
+        </svg>
+      </span>
+      <h2 className="empty__title">{wording.inboxZero}</h2>
+      <p className="empty__line">{emptyLine(scope)}</p>
       <p className="part__aside">{wording.emptyHint}</p>
     </article>
   )

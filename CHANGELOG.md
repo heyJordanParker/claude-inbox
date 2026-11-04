@@ -44,7 +44,9 @@ What changed in each version of inbox, for the people who use it. cmod publish r
 - Both views show one list of items, like an email inbox, with no sections. An item you requested changes on stays in the list, marked changes requested, and the item shown first is the first one that needs you.
 - No item leaves the page: the Archive under the list holds every item you answered or an agent withdrew, marked approved, rejected, answered, picked, done, or withdrawn, and a closed item opens with its answer.
 - An open item that no running session follows, because its sessions closed or stopped following it, moves to the Archive, marked agent closed, and moves back to the list when its session resumes. It still opens and takes your answer, which reaches the session when it resumes. Nothing is deleted. The warning that no running session follows your answer reads which sessions run from the same listing as the Archive.
-- Every item in the list and the Archive draws as a card with its kind, its status, its session in that session's color, its time, and its title. Archived cards are flat and faded, so the Archive reads as archived at a glance.
+- The list reads like a mail inbox: each row shows its session, its time, its title, and its kind, and an unread row is bold with a blue dot.
+- The Archive folds under one quiet line with its count, in the browser and in the Sidebar, and opens when you press it. Its rows are faded.
+- An inbox with nothing left for you says **Inbox zero**, with a check, "Nothing needs you in this session.", and what arrives next.
 - The scope chips, the count above the prompt, and the browser tab's title count the items in the list, not the Archive.
 - Files and API drawings draw the /show-me tree: `+` and `-` mark added and removed rows, an edited file ends in `*`, and each note follows `<-`. An added row is green and a removed row red, a changed declaration shows its old line in red above its new line in green, and a `diff` example has the same colors.
 - In the browser, trees and code blocks draw unbroken box lines, keep their columns, and scroll sideways instead of wrapping a line.
