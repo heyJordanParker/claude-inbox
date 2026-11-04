@@ -1,0 +1,14 @@
+{
+  "format": 2,
+  "id": "do-we-want-courses",
+  "kind": "question",
+  "project": "/work",
+  "origin": { "session": "planner" },
+  "subscribers": [{ "session": "planner" }],
+  "revisions": [{ "session": "planner", "at": "2026-10-21T10:00:00.000Z", "content": { "kind": "question", "title": "Do we want courses?", "why": "It decides the schema and the billing." } }],
+  "answers": [{ "kind": "answer", "words": "Yes, paid ones", "revision": 0, "by": "person", "at": "2026-10-21T10:05:00.000Z" }],
+  "lastRead": 0,
+  "queuedAt": "2026-10-21T10:00:00.000Z",
+  "updatedAt": "2026-10-21T10:00:00.000Z",
+  "status": "answered"
+}

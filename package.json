@@ -1,0 +1,20 @@
+{
+  "name": "inbox",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "cmod": {
+    "program": "inbox",
+    "hotkeys": {
+      "toggle": {
+        "title": "Show or hide the inbox"
+      }
+    }
+  },
+  "dependencies": {
+    "@cmodjs/core": "^5.8.0",
+    "beautiful-mermaid": "1.1.3"
+  }
+}

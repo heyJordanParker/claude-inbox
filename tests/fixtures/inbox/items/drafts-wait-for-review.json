@@ -1,0 +1,29 @@
+{
+  "format": 6,
+  "id": "drafts-wait-for-review",
+  "kind": "proposal",
+  "project": "/work",
+  "origin": { "session": "writer", "agent": "copywriter" },
+  "subscribers": [{ "session": "writer", "agent": "copywriter" }],
+  "revisions": [
+    {
+      "session": "writer",
+      "agent": "copywriter",
+      "at": "2026-10-24T08:00:00.000Z",
+      "content": {
+        "kind": "proposal",
+        "title": "Drafts wait for review",
+        "goal": "No draft reaches readers unread",
+        "problems": [
+          {
+            "title": "Drafts publish at once",
+            "ideas": [{ "idea": "A typo reached 2,000 readers last week." }],
+            "solution": { "title": "A draft waits for one review", "ideas": [{ "idea": "Publish asks for a reviewer.", "drawing": { "kind": "example", "language": "text", "code": "Publish → Waiting for review" } }] }
+          }
+        ]
+      }
+    }
+  ],
+  "withdrawal": { "kind": "withdraw", "words": "Not this quarter", "revision": 0, "by": "person", "at": "2026-10-24T09:00:00.000Z" },
+  "updatedAt": "2026-10-24T09:00:00.000Z"
+}

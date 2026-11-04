@@ -1,0 +1,36 @@
+{
+  "format": 3,
+  "id": "the-inbox-ships",
+  "kind": "report",
+  "project": "/work",
+  "origin": { "session": "builder", "agent": "cto" },
+  "subscribers": [{ "session": "builder", "agent": "cto" }],
+  "revisions": [
+    {
+      "session": "builder",
+      "agent": "cto",
+      "at": "2026-10-22T11:00:00.000Z",
+      "content": {
+        "kind": "report",
+        "title": "The inbox ships",
+        "goal": "One inbox holds every item an agent brings",
+        "outcome": "Reached after one review.",
+        "problems": [
+          {
+            "title": "Items were buried in replies",
+            "ideas": [{ "idea": "An agent's question scrolled away in its reply." }],
+            "solution": {
+              "title": "One page holds every item",
+              "ideas": [{ "idea": "The Inbox page lists each item.", "evidence": ["Reproduced live: the page lists 3 items"], "drawing": { "kind": "screen", "screen": "the Inbox page", "sketch": "3 items wait for you" } }]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "answers": [{ "kind": "acknowledge", "revision": 0, "by": "person", "at": "2026-10-22T11:10:00.000Z" }],
+  "lastRead": 0,
+  "queuedAt": "2026-10-22T11:00:00.000Z",
+  "updatedAt": "2026-10-22T11:00:00.000Z",
+  "status": "answered"
+}
