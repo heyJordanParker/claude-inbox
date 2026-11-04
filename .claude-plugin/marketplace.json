@@ -1,0 +1,27 @@
+{
+  "name": "inbox",
+  "owner": {
+    "name": "heyJordanParker"
+  },
+  "description": "One inbox for every proposal, choice, question, and report your Claude Code agents bring you, across every session. Agents fill typed fields, the inbox checks them against the code and draws the Architecture, and your answer goes back to every session that follows the item.",
+  "plugins": [
+    {
+      "name": "inbox",
+      "description": "One inbox for every proposal, choice, question, and report your Claude Code agents bring you, across every session. Agents fill typed fields, the inbox checks them against the code and draws the Architecture, and your answer goes back to every session that follows the item.",
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/heyJordanParker/claude-inbox/releases/download/v0.3.0/inbox-0.3.0.zip",
+        "sha256": "2edbdd273ea144beb294d578c1bb653d496e00ffa4476dbdfbaee9d7544dd96d"
+      }
+    },
+    {
+      "name": "cmod",
+      "description": "Claude Mod Manager: runs the uninstall step of each mod Claude Code removes",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/heyJordanParker/cmod.git",
+        "ref": "release"
+      }
+    }
+  ]
+}
