@@ -1,6 +1,11 @@
 import { diffOf, treeOf } from './drawings.js'
-import { authorOf } from './formats.js'
 import { revisionNumber, type Answer, type Author, type CodeDiff, type Content, type Drawing, type FileTree, type Idea, type Item, type Kind, type Note, type Person, type Problem, type Revision, type Shipped, type Solution, type Withdrawal } from './item.js'
+
+export const format = 7
+
+function authorOf({ session, agent }: Author): Author {
+  return { session, ...(agent === undefined ? {} : { agent }) }
+}
 
 type Fields = Readonly<Record<string, unknown>>
 
@@ -123,7 +128,7 @@ function revisionText(item: Item, index: number, itemFields: Fields): string {
 
 export function itemMarkdown(item: Item): string {
   const withdrawal = item.withdrawal === undefined ? undefined : { ...item.withdrawal, revision: revisionNumber(item.withdrawal.revision) }
-  return revisionText(item, item.revisions.length - 1, { project: item.project, origin: item.origin, subscribers: item.subscribers, updatedAt: item.updatedAt, withdrawal })
+  return revisionText(item, item.revisions.length - 1, { project: item.project, origin: item.origin, subscribers: item.subscribers, delivers: item.delivers, updatedAt: item.updatedAt, withdrawal })
 }
 
 export function revisionMarkdown(item: Item, index: number): string {
@@ -424,6 +429,7 @@ export function parseItem(id: string, text: string, earlier: readonly string[]):
   const sorted = [...older].sort((a, b) => a.number - b.number)
   if (sorted.length !== count - 1 || sorted.some(({ number }, index) => number !== index + 1)) throw new Error(`${what} is revision ${count}, and revisions/${id}/ holds ${sorted.map(({ number }) => number).join(', ') || 'none'} of the ${count - 1} before it.`)
   const withdrawal = fields['withdrawal'] as (Withdrawal & { readonly revision: number }) | undefined
+  const delivers = fields['delivers'] === undefined ? undefined : field<readonly string[]>(fields, 'delivers', what, (value) => Array.isArray(value) && value.every(isText))
   return {
     format: field<number>(fields, 'format', what, isCount),
     id,
@@ -433,6 +439,7 @@ export function parseItem(id: string, text: string, earlier: readonly string[]):
     subscribers: field<Item['subscribers']>(fields, 'subscribers', what, Array.isArray),
     revisions: [...sorted.map(({ number: _, ...revision }) => revision), latest],
     ...(withdrawal === undefined ? {} : { withdrawal: { ...withdrawal, revision: withdrawal.revision - 1 } }),
+    ...(delivers === undefined ? {} : { delivers }),
     updatedAt: field<string>(fields, 'updatedAt', what, isText),
   }
 }

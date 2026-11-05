@@ -2,9 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import { join, sep } from 'node:path'
 import { answer, dropNote, markRead, Moved, NotOffered, setNote, skip, type Given } from '../../src/items/answers.js'
-import { isFollowed, isUnnamed, plural, sendersFor, type Item, type Person, type Senders } from '../../src/items/item.js'
-import { convertJsonFiles, itemOf, itemPath, readerOf, rereadMs, type Changed, type Store } from '../../src/items/store.js'
-import { remove } from './disk.js'
+import { isFollowed, isUnnamed, sendersFor, type Item, type Person, type Senders } from '../../src/items/item.js'
+import { itemOf, itemPath, readerOf, rereadMs, type Changed, type Store } from '../../src/items/store.js'
 import script from '../build/script.txt' with { type: 'file' }
 import shell from '../build/shell.txt' with { type: 'file' }
 import style from '../build/style.txt' with { type: 'file' }
@@ -249,9 +248,6 @@ export async function serve({ store, port, token, senders: listSenders, reposito
     throw new Refusal(404, `${request.method} ${pathname} is not an inbox route.`)
   }
 
-  const { converted, skipped } = await convertJsonFiles(store, {}, remove)
-  for (const line of skipped) console.error(`inbox serve left ${line}`)
-  if (converted > 0) console.error(`inbox serve converted ${plural(converted, 'JSON file')} to Markdown`)
   await poll()
   const server = Bun.serve({
     hostname: host,

@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ago, cardStatusOf, cardTime, current, emptyLine, kindName, personOf, scopeNames, senderOf, wording, type Item, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
+import { ago, cardStatusOf, cardTime, current, emptyLine, kindName, personOf, scopeNames, senderOf, threadLine, wording, type Deliveries, type Item, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
 import { Sender, Title } from './item.js'
 
-type Shared = { readonly person: PersonFiles; readonly senders: Senders; readonly shownId: string | undefined; readonly onView: (id: string) => void }
+type Shared = { readonly person: PersonFiles; readonly senders: Senders; readonly deliveries: Deliveries; readonly shownId: string | undefined; readonly onView: (id: string) => void }
 
-function ItemCard({ item, isArchived, person, senders, shownId, onView }: Shared & { readonly item: Item; readonly isArchived: boolean }): ReactNode {
+function ItemCard({ item, isArchived, person, senders, deliveries, shownId, onView }: Shared & { readonly item: Item; readonly isArchived: boolean }): ReactNode {
   const itemPerson = personOf(person, item)
-  const status = cardStatusOf(item, itemPerson, senders)
+  const status = cardStatusOf(item, itemPerson, senders, deliveries)
   const sender = senderOf(item.origin, item.project, senders)
-  const at = cardTime(item, itemPerson)
+  const at = cardTime(item, itemPerson, deliveries)
+  const thread = threadLine(item)
   const isShown = item.id === shownId
   const card = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -36,6 +37,7 @@ function ItemCard({ item, isArchived, person, senders, shownId, onView }: Shared
               {status.word}
             </span>
           )}
+          {thread === undefined ? null : <span className="card__thread">{thread}</span>}
         </span>
       </button>
     </li>

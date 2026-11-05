@@ -2,6 +2,17 @@
 
 What changed in each version of inbox, for the people who use it. cmod publish releases the section for the version, and the Updated toast and Settings show it.
 
+## [0.4.0]
+
+### Added
+- A report names the items its work finishes, the proposal, choice, or question it ships, and each earlier report on the same work, and they leave your list with it. They wait in the Archive marked delivered, so the list shows one row for each piece of work. The report's row says how many items it delivers, the report lists them under Delivers, and each delivered item names its report under Delivered by, a press away, in the Sidebar and in the browser. An item you rejected or are waiting on changes to can't be delivered.
+- The browser view works with no Claude Code open: its program runs whenever you are logged in, as a service of your computer, and restarts on each new version by itself.
+
+### Changed
+- An agent's `read` lists only what is still open, leaves out what a report delivered, and names the report that delivered an item.
+- The inbox needs cmod 5.10.0 or newer.
+- Items stored as JSON by inbox 0.2.0 or older no longer convert. Update through 0.3.0 first.
+
 ## [0.3.0]
 
 ### Added

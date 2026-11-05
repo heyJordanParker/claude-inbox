@@ -1,6 +1,6 @@
 import { fs, messageOf, Note, process, Prompt, sessions, type Mod } from '../node_modules/@cmodjs/core/mod.js'
 import { advanced, marksIn, unheard, type Told } from './items/heard.js'
-import { isInScope, isUnnamed, narrowestScope, personOf, repositoryOf, scopes, senderOf, sendersFor, sendersOf, type Author, type Item, type Person, type Scope, type Sender } from './items/item.js'
+import { deliveriesOf, isInScope, isUnnamed, narrowestScope, personOf, repositoryOf, scopes, senderOf, sendersFor, sendersOf, type Author, type Deliveries, type Item, type Person, type Scope, type Sender } from './items/item.js'
 import { createItem, deliveryStart, readerOf, storeIn, updateItem, type Check, type Reader, type Reread, type Store } from './items/store.js'
 import type { InboxState } from './state.js'
 
@@ -28,6 +28,10 @@ export function rememberPerson(mod: Mod<InboxState>, id: string, person: Person)
 
 export function personIn(mod: Mod<InboxState>, item: Item): Person {
   return personOf(mod.state.memory.person, item)
+}
+
+export function deliveriesIn(mod: Mod<InboxState>): Deliveries {
+  return deliveriesOf(mod.state.memory.items)
 }
 
 export function senderIn(mod: Mod<InboxState>, item: Item, author: Author): Sender {

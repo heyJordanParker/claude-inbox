@@ -1,5 +1,4 @@
-import { converted, mergedPerson, upgradePerson } from './formats.js'
-import { personOf, revisionNumber, type Item, type Note, type Person, type PersonFiles } from './item.js'
+import { personOf, revisionNumber, type Item, type Person, type PersonFiles } from './item.js'
 import { itemMarkdown, parseItem, parsePerson, personMarkdown, revisionMarkdown } from './markdown.js'
 
 export type Disk = {
@@ -64,13 +63,9 @@ export function personPath(store: Store, id: string): string {
   return `${store.person}/${id}.md`
 }
 
-function jsonPath(folder: string, id: string): string {
-  return `${folder}/${id}.json`
-}
-
-async function storedFiles(store: Store, folder: string, extension = '.md'): Promise<{ readonly id: string; readonly name: string; readonly stamp: string }[]> {
+async function storedFiles(store: Store, folder: string): Promise<{ readonly id: string; readonly name: string; readonly stamp: string }[]> {
   if (!(await store.disk.exists(folder))) return []
-  return (await store.disk.list(folder)).filter((entry) => entry.isFile && entry.name.endsWith(extension)).map((entry) => ({ id: entry.name.slice(0, -extension.length), name: entry.name, stamp: `${entry.modifiedAt}:${entry.size}` }))
+  return (await store.disk.list(folder)).filter((entry) => entry.isFile && entry.name.endsWith('.md')).map((entry) => ({ id: entry.name.slice(0, -'.md'.length), name: entry.name, stamp: `${entry.modifiedAt}:${entry.size}` }))
 }
 
 async function storedIn(store: Store, path: string): Promise<Stored | undefined> {
@@ -241,78 +236,6 @@ export function updatePerson(store: Store, item: Item, change: (fresh: Person) =
     const person = change(fresh)
     if (JSON.stringify(person) !== JSON.stringify(fresh)) await save(store, personPath(store, item.id), item.id, personMarkdown(person))
     return person
-  })
-}
-
-type Converted = { readonly converted: number; readonly skipped: readonly string[] }
-
-type Remove = (path: string) => Promise<void>
-
-async function keptPerson(store: Store, id: string): Promise<Person | undefined> {
-  return (await store.disk.exists(personPath(store, id))) ? storedPerson(store, id) : undefined
-}
-
-function personFiles(store: Store, id: string, kept: Person | undefined, added: Person | undefined): Files {
-  const person = mergedPerson(kept, added)
-  return person === undefined || person === kept ? [] : [[personPath(store, id), personMarkdown(person)]]
-}
-
-function isCopyOf(id: string, jsonId: string): boolean {
-  return id === jsonId || (id.startsWith(`${jsonId}-`) && /^\d+$/.test(id.slice(jsonId.length + 1)))
-}
-
-function copyId(jsonId: string, taken: readonly string[]): string {
-  for (let index = 2; ; index += 1) if (!taken.includes(`${jsonId}-${index}`)) return `${jsonId}-${index}`
-}
-
-async function convertItem(store: Store, id: string, notes: readonly Note[], remove: Remove): Promise<string | undefined> {
-  const stored = await storedIn(store, jsonPath(store.items, id))
-  if (stored === undefined) throw new Error('it is no JSON object')
-  const person = await storedIn(store, jsonPath(store.person, id))
-  const found = converted(stored, person, notes)
-  const ids = (await storedFiles(store, store.items)).map((each) => each.id)
-  const copies = await Promise.all(ids.filter((each) => isCopyOf(each, id)).map((each) => storedItem(store, each)))
-  const kept = copies.find((each) => each.revisions[0]?.at === found.item.revisions[0]?.at)
-  const item = { ...found.item, id: kept?.id ?? (ids.includes(id) ? copyId(id, await takenIds(store)) : id) }
-  const files = [...(kept === undefined || kept.updatedAt < item.updatedAt ? [...revisionFiles(store, item, 0), [itemPath(store, item.id), itemMarkdown(item)] as const] : []), ...personFiles(store, item.id, await keptPerson(store, item.id), found.person)]
-  await writeFiles(store, files)
-  if (person !== undefined) await remove(jsonPath(store.person, id))
-  if (item.id === id) await remove(jsonPath(store.items, id))
-  return files.length > 0 || person !== undefined || item.id === id ? item.id : undefined
-}
-
-async function convertPerson(store: Store, id: string, remove: Remove): Promise<void> {
-  if (await store.disk.exists(jsonPath(store.items, id))) throw new Error(`it waits for items/${id}.json to convert`)
-  const person = await storedIn(store, jsonPath(store.person, id))
-  if (person === undefined) throw new Error('it is no JSON object')
-  if (!(await store.disk.exists(itemPath(store, id)))) throw new Error('it belongs to no stored item')
-  await writeFiles(store, personFiles(store, id, await keptPerson(store, id), upgradePerson(person)))
-  await remove(jsonPath(store.person, id))
-}
-
-export function convertJsonFiles(store: Store, notes: Readonly<Record<string, readonly Note[]>>, remove: Remove): Promise<Converted> {
-  return inWriteTurn(store, async () => {
-    const skipped: string[] = []
-    const done: string[] = []
-    for (const { id } of await storedFiles(store, store.items, '.json')) {
-      try {
-        const written = await convertItem(store, id, notes[id] ?? [], remove)
-        if (written !== undefined) done.push(written)
-      } catch (error) {
-        skipped.push(`items/${id}.json, which does not convert: ${reasonOf(error)}`)
-      }
-    }
-    for (const { id } of await storedFiles(store, store.person, '.json')) {
-      try {
-        await convertPerson(store, id, remove)
-        done.push(id)
-      } catch (error) {
-        skipped.push(`person/${id}.json, which does not convert: ${reasonOf(error)}`)
-      }
-    }
-    const last = done.at(-1)
-    if (last !== undefined) await store.disk.write(store.changed, `${new Date().toISOString()} ${last}\n`)
-    return { converted: done.length, skipped }
   })
 }
 

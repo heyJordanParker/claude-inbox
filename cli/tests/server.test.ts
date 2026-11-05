@@ -1,14 +1,13 @@
 import { afterEach, expect, jest, setSystemTime, test } from 'bun:test'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import Markdown from 'react-markdown'
 import { setNote } from '../../src/items/answers.js'
-import { format } from '../../src/items/formats.js'
 import type { Content, Item, Person, PersonFiles, Senders } from '../../src/items/item.js'
-import { parsePerson } from '../../src/items/markdown.js'
+import { format, parsePerson } from '../../src/items/markdown.js'
 import { createItem, itemPath, personPath, storeIn, updateItem, type Changed, type Disk, type Store } from '../../src/items/store.js'
 import plugin from '../../.claude-plugin/plugin.json'
 import { buildApp, built } from '../build.ts'
@@ -633,50 +632,3 @@ test('inbox --version prints the version in .claude-plugin/plugin.json and exits
   expect(await new Response(child.stdout).text()).toBe(`${plugin.version}\n`)
   expect(await child.exited).toBe(0)
 })
-
-async function linkedProgram() {
-  const bin = folder()
-  const build = join(bin, '0.2.0', 'inbox')
-  const link = join(bin, 'inbox')
-  const compiled = Bun.spawn([process.execPath, 'build', '--compile', main, '--outfile', build], { cwd: bin, stdout: 'ignore', stderr: 'pipe' })
-  expect(await compiled.exited).toBe(0)
-  symlinkSync(build, link)
-  const child = Bun.spawn([link, 'serve', '--data', folder()], { stdout: 'pipe', stderr: 'pipe' })
-  cleanups.push(async () => {
-    child.kill()
-    await child.exited
-  })
-  const address = await firstLine(child.stdout)
-  await Bun.sleep(3000)
-  const served = await fetch(`http://${address}/`)
-  return { bin, build, link, child, isServing: served.status === 200 && child.exitCode === null }
-}
-
-test('the compiled inbox serve keeps serving while the program it was started as stays the same, and exits 0 once cmod link renames a new build of the same version onto it, so cmod starts the new build', async () => {
-  const { build, link, child, isServing } = await linkedProgram()
-  copyFileSync(build, `${build}.1.tmp`)
-  renameSync(`${build}.1.tmp`, build)
-  const replacedAt = Date.now()
-  const exitCode = await child.exited
-
-  expect(isServing).toBe(true)
-  expect(exitCode).toBe(0)
-  expect(Date.now() - replacedAt).toBeLessThan(4000)
-  expect(await new Response(child.stderr).text()).toContain(`${link} changed, so this copy stops`)
-}, 60_000)
-
-test('the compiled inbox serve exits 0 once its link moves to a new version, although the build it runs stays in place', async () => {
-  const { bin, build, link, child, isServing } = await linkedProgram()
-  const newer = join(bin, '0.3.0', 'inbox')
-  mkdirSync(join(bin, '0.3.0'))
-  copyFileSync(build, newer)
-  symlinkSync(newer, `${link}.1.tmp`)
-  renameSync(`${link}.1.tmp`, link)
-  const movedAt = Date.now()
-  const exitCode = await child.exited
-
-  expect(isServing).toBe(true)
-  expect(statSync(build).isFile()).toBe(true)
-  expect(exitCode).toBe(0)
-  expect(Date.now() - movedAt).toBeLessThan(4000)
-}, 60_000)

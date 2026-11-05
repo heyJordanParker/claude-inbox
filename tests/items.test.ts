@@ -2,11 +2,10 @@ import { expect, setSystemTime, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
 import { actionsOf, answer, dropNote, markRead, Moved, NotOffered, setNote, skip, viewingAfterAnswer } from '../src/items/answers.js'
 import { changeCounts, diagramKindOf, diffOf, drawingLabel, kindOf, statsOf, treeOf } from '../src/items/drawings.js'
-import { format } from '../src/items/formats.js'
 import { advanced, marksIn, unheard } from '../src/items/heard.js'
-import { ago, archive, cardStatusOf, closingLines, closingOf, isArchived, isFollowed, narrowestScope, personOf, positionLine, queue, repositoryOf, scopes, shownOf, statusOf, type CodeDiff, type Content, type Item, type Note, type Person, type Run, type Scope, type Senders } from '../src/items/item.js'
-import { parsePerson, personMarkdown } from '../src/items/markdown.js'
-import { convertJsonFiles, createItem, itemPath, personPath, readerOf, readItems, readPerson, storeIn, updateItem, type Disk } from '../src/items/store.js'
+import { ago, archive, cardStatusOf, cardTime, closingLines, closingOf, deliveriesOf, isArchived, isFollowed, narrowestScope, personOf, positionLine, queue, repositoryOf, scopes, shownOf, statusOf, threadLine, threadOf, type CodeDiff, type Content, type Item, type Note, type Person, type Run, type Scope, type Senders } from '../src/items/item.js'
+import { format, parsePerson, personMarkdown } from '../src/items/markdown.js'
+import { createItem, itemPath, personPath, readerOf, readItems, readPerson, storeIn, updateItem, type Disk } from '../src/items/store.js'
 import { foldKey, folds, isChanged, isUnchanged, opensAt, rootsOf, summaryOf, unrevised, type Revised } from '../src/items/tree.js'
 
 const core = new URL('../src/items/', import.meta.url).pathname
@@ -101,15 +100,15 @@ test('every closed item is in the Archive newest first, marked with what closed 
     return closing === undefined ? [] : closingLines(item, closing, { planner: { title: 'schema planning' } })
   }
 
-  const archived = archive([rejected, withdrawn, open], person, {})
+  const archived = archive([rejected, withdrawn, open], person, {}, {})
 
-  expect(archived.map((item) => [item.id, cardStatusOf(item, personOf(person, item), {})?.word])).toEqual([
+  expect(archived.map((item) => [item.id, cardStatusOf(item, personOf(person, item), {}, {})?.word])).toEqual([
     ['withdrawn', 'withdrawn'],
     ['rejected', 'rejected'],
   ])
   expect(archived.map(linesOf)).toEqual([['schema planning withdrew it: Moved to billing'], ['✎ Problem 1: Wrong problem']])
-  expect(queue([rejected, withdrawn, open], person, {}).map((item) => item.id)).toEqual(['open'])
-  expect(shownOf([open, rejected], person, {}, 'rejected')?.id).toBe('rejected')
+  expect(queue([rejected, withdrawn, open], person, {}, {}).map((item) => item.id)).toEqual(['open'])
+  expect(shownOf([open, rejected], person, {}, {}, 'rejected')?.id).toBe('rejected')
   expect(actionsOf(rejected, personOf(person, rejected), { hasNext: true, isCommenting: false })).toEqual([])
 })
 
@@ -120,10 +119,10 @@ const running: Senders = { planner: { title: 'schema planning', isRunning: true 
 test('an open item whose sessions all stopped is in the Archive, marked agent closed, and still opens with its answer buttons', () => {
   const item = itemOf(question, 'courses')
 
-  expect(queue([item], {}, stopped)).toEqual([])
-  expect(archive([item], {}, stopped)).toEqual([item])
-  expect(cardStatusOf(item, nobody(item), stopped)).toEqual({ word: 'agent closed', tone: 'archived' })
-  expect(positionLine([], item, nobody(item), Date.parse('2026-10-22T10:05:00.000Z'))).toBe('agent closed · 5m ago')
+  expect(queue([item], {}, stopped, {})).toEqual([])
+  expect(archive([item], {}, stopped, {})).toEqual([item])
+  expect(cardStatusOf(item, nobody(item), stopped, {})).toEqual({ word: 'agent closed', tone: 'archived' })
+  expect(positionLine([], item, nobody(item), {}, Date.parse('2026-10-22T10:05:00.000Z'))).toBe('agent closed · 5m ago')
   expect(rows(item, nobody(item)).map(([id]) => id)).toContain('answer')
 })
 
@@ -131,27 +130,27 @@ test('an open item is in the list while any of its sessions runs, so it comes ba
   const item = itemOf(question, 'courses')
   const followed = { ...item, subscribers: [...item.subscribers, { session: 'reviewer', since: '2026-10-22T10:01:00.000Z' }] }
 
-  expect(queue([item], {}, running)).toEqual([item])
-  expect(archive([item], {}, running)).toEqual([])
-  expect(cardStatusOf(item, nobody(item), running)).toEqual({ word: 'new', tone: 'unseen' })
-  expect(queue([followed], {}, { ...stopped, reviewer: { title: 'review', isRunning: true } })).toEqual([followed])
+  expect(queue([item], {}, running, {})).toEqual([item])
+  expect(archive([item], {}, running, {})).toEqual([])
+  expect(cardStatusOf(item, nobody(item), running, {})).toEqual({ word: 'new', tone: 'unseen' })
+  expect(queue([followed], {}, { ...stopped, reviewer: { title: 'review', isRunning: true } }, {})).toEqual([followed])
 })
 
 test('an open item stays in the list while the inbox does not know whether its sessions run', () => {
   const item = itemOf(question, 'courses')
 
-  expect(queue([item], {}, {})).toEqual([item])
-  expect(queue([item], {}, { planner: { title: 'schema planning' } })).toEqual([item])
-  expect(archive([item], {}, {})).toEqual([])
+  expect(queue([item], {}, {}, {})).toEqual([item])
+  expect(queue([item], {}, { planner: { title: 'schema planning' } }, {})).toEqual([item])
+  expect(archive([item], {}, {}, {})).toEqual([])
 })
 
 test('an item with requested changes is in the list, not the Archive, marked changes requested', () => {
   const item = itemOf(proposal, 'match')
   const person = { match: { ...nobody(item), lastRead: 0, answers: [{ kind: 'correct' as const, revision: 0, at: '2026-10-22T10:10:00.000Z', corrections: [note('p0', 'Say who writes the default')] }] } }
 
-  expect(queue([item], person, running)).toEqual([item])
-  expect(archive([item], person, running)).toEqual([])
-  expect(cardStatusOf(item, personOf(person, item), running)).toEqual({ word: 'changes requested', tone: 'requested' })
+  expect(queue([item], person, running, {})).toEqual([item])
+  expect(archive([item], person, running, {})).toEqual([])
+  expect(cardStatusOf(item, personOf(person, item), running, {})).toEqual({ word: 'changes requested', tone: 'requested' })
 })
 
 test('the item shown by default is the first in the list that needs the person, past one waiting on requested changes and one in the Archive', () => {
@@ -165,10 +164,48 @@ test('the item shown by default is the first in the list that needs the person, 
   }
   const senders = { ...running, ended: { title: 'ended', isRunning: false } }
 
-  expect(queue([requested, ended, fresh], person, senders).map((item) => item.id)).toEqual(['requested', 'fresh'])
-  expect(shownOf([requested, ended, fresh], person, senders, null)?.id).toBe('fresh')
-  expect(shownOf([requested, ended], person, senders, null)?.id).toBe('requested')
-  expect(shownOf([ended], person, senders, null)).toBeUndefined()
+  expect(queue([requested, ended, fresh], person, senders, {}).map((item) => item.id)).toEqual(['requested', 'fresh'])
+  expect(shownOf([requested, ended, fresh], person, senders, {}, null)?.id).toBe('fresh')
+  expect(shownOf([requested, ended], person, senders, {}, null)?.id).toBe('requested')
+  expect(shownOf([ended], person, senders, {}, null)).toBeUndefined()
+})
+
+test('a report takes each item it delivers out of the list into the Archive, marked delivered at the report time, and each one links to the other', () => {
+  const asked = itemOf(proposal, 'match')
+  const first = { ...itemOf({ kind: 'report', title: 'Matches ship', goal: 'Enums ship', changes: [{ title: 'No default', evidence: ['Ran it'] }] }, 'first'), delivers: ['match'] }
+  const second = { ...itemOf({ kind: 'report', title: 'Matches ship faster', goal: 'Enums ship', changes: [{ title: 'Faster', evidence: ['Ran it'] }] }, 'second'), delivers: ['first'], revisions: [{ ...origin, content: { kind: 'report' as const, title: 'Matches ship faster', goal: 'Enums ship', changes: [{ title: 'Faster', evidence: ['Ran it'] }] }, at: '2026-10-22T11:00:00.000Z' }] }
+  const items = [asked, first, second]
+  const deliveries = deliveriesOf(items)
+
+  expect(queue(items, {}, running, deliveries).map((item) => item.id)).toEqual(['second'])
+  expect(archive(items, {}, running, deliveries).map((item) => [item.id, cardStatusOf(item, nobody(item), running, deliveries)?.word])).toEqual([
+    ['first', 'delivered'],
+    ['match', 'delivered'],
+  ])
+  expect(cardTime(first, nobody(first), deliveries)).toBe('2026-10-22T11:00:00.000Z')
+  expect(positionLine([second], asked, nobody(asked), deliveries, Date.parse('2026-10-22T10:05:00.000Z'))).toBe('delivered · 5m ago')
+  expect(threadOf(first, items, deliveries)).toEqual({ deliveredBy: second, delivers: [asked] })
+  expect(threadLine(second)).toBe('delivers 1 item')
+  expect(rows(asked, nobody(asked)).map(([id]) => id)).toContain('approve')
+})
+
+test('an item an agent revises after a report delivered it comes back to the list, because the report delivered only the revision before it', () => {
+  const asked = itemOf(proposal, 'match')
+  const report = { ...itemOf({ kind: 'report', title: 'Matches ship', goal: 'Enums ship', changes: [{ title: 'No default', evidence: ['Ran it'] }] }, 'shipped'), delivers: ['match'] }
+  const revised = { ...asked, revisions: [...asked.revisions, { ...origin, content: { ...proposal, goal: 'Enums ship, nested ones too' }, at: '2026-10-22T12:00:00.000Z' }] }
+
+  expect(queue([asked, report], {}, running, deliveriesOf([asked, report])).map((item) => item.id)).toEqual(['shipped'])
+  expect(queue([revised, report], {}, running, deliveriesOf([revised, report])).map((item) => item.id)).toEqual(['match', 'shipped'])
+})
+
+test('an item the person answered keeps the answer as its mark after a report delivers it', () => {
+  const asked = itemOf(proposal, 'match')
+  const report = { ...itemOf({ kind: 'report', title: 'Matches ship', goal: 'Enums ship', changes: [{ title: 'No default', evidence: ['Ran it'] }] }, 'shipped'), delivers: ['match'] }
+  const person = { match: { ...nobody(asked), answers: [{ kind: 'approve' as const, revision: 0, at: '2026-10-22T10:10:00.000Z' }] } }
+  const deliveries = deliveriesOf([asked, report])
+
+  expect(cardStatusOf(asked, personOf(person, asked), running, deliveries)).toEqual({ word: 'approved', tone: 'archived' })
+  expect(isArchived(asked, nobody(asked), running, deliveries)).toBe(true)
 })
 
 test('no file in src/items imports @cmodjs/core, so a program outside Claude Code runs the same core', () => {
@@ -207,19 +244,6 @@ test('an item file that does not read as an item is skipped as unreadable, and t
 
   expect(read.items.map((each) => each.id)).toEqual([item.id])
   expect(read.unreadable).toEqual([{ id: 'broken', reason: "items/broken.md's front matter has no valid kind: undefined" }])
-})
-
-test('the conversion to Markdown leaves a JSON file it cannot read, names it, and converts the rest', async () => {
-  const disk = memoryDisk()
-  const store = storeIn('/data', disk)
-  const stored = { ...itemOf(proposal, 'match'), format: 5, status: 'open', lastRead: 0, queuedAt: '2026-10-22T10:05:00.000Z', answers: [] }
-  await disk.write('/data/items/match.json', JSON.stringify(stored))
-  await disk.write('/data/items/broken.json', JSON.stringify({ id: 'broken', format: 3 }))
-
-  expect(await convertJsonFiles(store, {}, async (path) => disk.remove(path))).toEqual({ converted: 1, skipped: ['items/broken.json, which does not convert: it holds no revisions'] })
-  expect(await disk.exists(personPath(store, 'match'))).toBe(true)
-  expect([await disk.exists('/data/items/match.json'), await disk.exists(itemPath(store, 'match'))]).toEqual([false, true])
-  expect(await disk.read('/data/items/broken.json')).toBe(JSON.stringify({ id: 'broken', format: 3 }))
 })
 
 test('a reread names the item and person files deleted since the last read, and a read of every file names them too', async () => {
@@ -419,22 +443,22 @@ test('a rejection closes only the revision it answered, so the next revision is 
   const { person } = await readPerson(store)
   const kept = personOf(person, revised)
 
-  expect(cardStatusOf(item, rejected, running)).toEqual({ word: 'rejected', tone: 'archived' })
+  expect(cardStatusOf(item, rejected, running, {})).toEqual({ word: 'rejected', tone: 'archived' })
   expect(statusOf(revised, kept)).toBe('open')
-  expect(queue([revised], person, running)).toEqual([revised])
-  expect(cardStatusOf(revised, kept, running)).toEqual({ word: 'changed', tone: 'unseen' })
+  expect(queue([revised], person, running, {})).toEqual([revised])
+  expect(cardStatusOf(revised, kept, running, {})).toEqual({ word: 'changed', tone: 'unseen' })
   expect(kept.answers.map(({ kind, revision }) => ({ kind, revision }))).toEqual([{ kind: 'reject', revision: 0 }])
-  expect(cardStatusOf(revised, await answer(store, item.id, 1, { kind: 'reject' }), running)).toEqual({ word: 'rejected', tone: 'archived' })
+  expect(cardStatusOf(revised, await answer(store, item.id, 1, { kind: 'reject' }), running, {})).toEqual({ word: 'rejected', tone: 'archived' })
 })
 
 test('one read of the senders says both whether an item is archived and whether a running session follows it, and a session not read yet counts as running', () => {
   const item = itemOf(question, 'courses')
   const unsubscribed = { ...item, subscribers: [] }
 
-  expect([isArchived(item, nobody(item), stopped), isFollowed(item, stopped)]).toEqual([true, false])
-  expect([isArchived(item, nobody(item), running), isFollowed(item, running)]).toEqual([false, true])
-  expect([isArchived(item, nobody(item), {}), isFollowed(item, {})]).toEqual([false, true])
-  expect([isArchived(unsubscribed, nobody(unsubscribed), running), isFollowed(unsubscribed, running)]).toEqual([true, false])
+  expect([isArchived(item, nobody(item), stopped, {}), isFollowed(item, stopped)]).toEqual([true, false])
+  expect([isArchived(item, nobody(item), running, {}), isFollowed(item, running)]).toEqual([false, true])
+  expect([isArchived(item, nobody(item), {}, {}), isFollowed(item, {})]).toEqual([false, true])
+  expect([isArchived(unsubscribed, nobody(unsubscribed), running, {}), isFollowed(unsubscribed, running)]).toEqual([true, false])
 })
 
 test('a note names its part, replaces the note on that part and revision, and an empty one drops it', async () => {
@@ -489,33 +513,6 @@ test('reading an item marks the revision the person saw, a second read writes no
   } finally {
     setSystemTime()
   }
-})
-
-test('each conversion writes a person file for an old item that has none, writes the item as Markdown at the current format, and adds an answer an old build wrote after an earlier conversion', async () => {
-  const disk = memoryDisk()
-  const store = storeIn('/data', disk)
-  const remove = async (path: string) => disk.remove(path)
-  const first = { kind: 'approve', revision: 0, by: 'person', at: '2026-10-22T10:10:00.000Z' }
-  const stored = { ...itemOf(proposal, 'match'), format: 5, status: 'answered', lastRead: 0, queuedAt: '2026-10-22T10:05:00.000Z', answers: [first] }
-  await disk.write('/data/items/match.json', JSON.stringify(stored))
-  const notes = { match: [note('', 'Ship it')] }
-
-  expect(await convertJsonFiles(store, notes, remove)).toEqual({ converted: 1, skipped: [] })
-  expect(parsePerson('match', await disk.read(personPath(store, 'match')))).toEqual({ notes: [note('', 'Ship it')], answers: [{ kind: 'approve', revision: 0, at: '2026-10-22T10:10:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:05:00.000Z' })
-  const [rewritten] = (await readItems(store)).items
-  expect([rewritten?.format, rewritten?.updatedAt]).toEqual([format, stored.updatedAt])
-  expect(await disk.exists('/data/items/match.json')).toBe(false)
-  expect((await disk.read(store.changed)).endsWith(' match\n')).toBe(true)
-  expect(await convertJsonFiles(store, notes, remove)).toEqual({ converted: 0, skipped: [] })
-
-  const later = { kind: 'reject', words: 'Not now', revision: 0, by: 'person', at: '2026-10-22T11:00:00.000Z' }
-  await disk.write('/data/items/match.json', JSON.stringify({ ...stored, answers: [first, later] }))
-  expect(await convertJsonFiles(store, notes, remove)).toEqual({ converted: 1, skipped: [] })
-  expect(parsePerson('match', await disk.read(personPath(store, 'match'))).answers.map((each) => each.at)).toEqual([first.at, later.at])
-
-  const [item] = (await readItems(store)).items
-  const person = (await readPerson(store)).person['match']
-  expect(item === undefined || person === undefined ? 'missing' : statusOf(item, person)).toBe('answered')
 })
 
 test('the footer offers each kind its answers, counts the notes, and shows Comment and Next → only when the view can use them', () => {

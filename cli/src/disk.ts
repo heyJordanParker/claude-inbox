@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { Run } from '../../src/items/item.js'
 import type { Disk } from '../../src/items/store.js'
@@ -27,8 +27,6 @@ export const disk: Disk = {
     )
   },
 }
-
-export const remove = (path: string): Promise<void> => rm(path, { force: true })
 
 export const run: Run = async (argv) => {
   const child = Bun.spawn([...argv], { stdout: 'pipe', stderr: 'inherit' })

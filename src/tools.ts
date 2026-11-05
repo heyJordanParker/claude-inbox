@@ -2,8 +2,8 @@ import { messageOf, process, sessions, type Job, type Mod, type Tool } from '../
 import { tool } from '../node_modules/@cmodjs/core/jobs/tool.js'
 import { author, change, create, find, learnSenders, load, personIn, senderIn, storeOf } from './actions.js'
 import { completeContent, type DeclaredContent } from './completion.js'
-import { format } from './items/formats.js'
-import { byQueue, closingOf, current, isUnnamed, revisionNumber, revisionOf, statusOf, type Item, type Kind } from './items/item.js'
+import { byQueue, closingOf, current, deliveriesOf, isUnnamed, isWithAgent, revisionNumber, revisionOf, statusOf, type Deliveries, type Item, type Kind } from './items/item.js'
+import { format } from './items/markdown.js'
 import { itemPath, type Check } from './items/store.js'
 import { schemas } from './schemas.js'
 import type { InboxState } from './state.js'
@@ -67,9 +67,12 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
     })
 
   const file = async (mod: Mod<InboxState>, kind: Kind, input: Input): Promise<string> => {
-    const { project: given, ...fields } = input
+    const { project: given, delivers, ...fields } = input
     const project = typeof given === 'string' ? given.replace(/\/+$/, '') : sessions.current.project
     const declared = { kind, ...fields } as DeclaredContent
+    const ids = (delivers as readonly string[] | undefined) ?? []
+    if (ids.length > 0) await load(mod)
+    const delivered = deliverable(mod, ids)
     const content = await completeContent(declared, project)
     const by = author()
     const now = new Date().toISOString()
@@ -85,12 +88,14 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
         origin: by,
         subscribers: [{ ...by, since: now }],
         revisions: [{ ...by, content, at: now }],
+        ...(delivered.length === 0 ? {} : { delivers: delivered.map((each) => each.id) }),
         updatedAt: now,
       }),
       rulebookCheck(mod, told),
     )
     shown(mod, item.id)
-    return withTold(`The inbox holds the ${item.kind} "${declared.title}" as ${item.id}, and shows it to the user. This session is subscribed, so the answer arrives here as a prompt. ${linkLine(mod, item)}`, told)
+    const finished = delivered.length === 0 ? '' : ` It delivers ${delivered.map((each) => each.id).join(', ')}, which leave the user's list with it.`
+    return withTold(`The inbox holds the ${item.kind} "${declared.title}" as ${item.id}, and shows it to the user.${finished} This session is subscribed, so the answer arrives here as a prompt. ${linkLine(mod, item)}`, told)
   }
 
   return [
@@ -114,7 +119,7 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
     ),
     inboxTool(
       'report',
-      'Put a report in the inbox when work is done: each thing that changed for the user with how you know it works, and the Problems left open. The user marks it done or requests changes. Read the proposals Skill first.',
+      "Put a report in the inbox when work is done: each thing that changed for the user with how you know it works, and the Problems left open. Name in delivers the proposal, choice, or question the work ships and each earlier report this one replaces, so they leave the user's list. The user marks it done or requests changes. Read the proposals Skill first.",
       schemas.report,
       (input, mod) => file(mod, 'report', input),
     ),
@@ -175,23 +180,46 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
       await load(mod)
       if (isUnnamed(mod.state.memory.items, mod.state.memory.senders)) await learnSenders(mod)
       const id = input['id'] as string | undefined
+      const deliveries = deliveriesOf(mod.state.memory.items)
       if (id === undefined)
         return mod.state.memory.items
-          .filter((item) => statusOf(item, personIn(mod, item)) === 'open')
+          .filter((item) => statusOf(item, personIn(mod, item)) === 'open' && deliveries[item.id] === undefined)
           .sort(byQueue(mod.state.memory.person))
-          .map((item) => summaryOf(mod, item))
+          .map((item) => summaryOf(mod, item, deliveries))
       const item = find(mod, id)
       const closings = [...personIn(mod, item).answers, ...(item.withdrawal === undefined ? [] : [item.withdrawal])].sort((a, b) => a.at.localeCompare(b.at))
       const answers = closings.map((closing) => ({ ...numbered(closing), ...('corrections' in closing && closing.corrections !== undefined ? { corrections: closing.corrections.map(numbered) } : {}) }))
-      return { ...summaryOf(mod, item), revision: revisionNumber(revisionOf(item)), content: current(item), answers }
+      return { ...summaryOf(mod, item, deliveries), revision: revisionNumber(revisionOf(item)), content: current(item), answers }
     }),
   ]
+}
+
+function deliverable(mod: Mod<InboxState>, ids: readonly string[]): Item[] {
+  return ids.map((id) => {
+    const item = find(mod, id)
+    const person = personIn(mod, item)
+    if (closingOf(item, person)?.kind === 'reject') throw new Error(`The user rejected ${id}, so this report cannot deliver it. Revise ${id} if the work answers the rejection, or leave it out of delivers.`)
+    if (isWithAgent(item, person)) throw new Error(`The user is waiting on your changes to ${id}, so this report cannot deliver it. Revise ${id} with the changes, or leave it out of delivers.`)
+    return item
+  })
 }
 
 function numbered<Each extends { readonly revision: number }>(each: Each): Each {
   return { ...each, revision: revisionNumber(each.revision) }
 }
 
-function summaryOf(mod: Mod<InboxState>, item: Item) {
-  return { id: item.id, kind: item.kind, status: statusOf(item, personIn(mod, item)), title: current(item).title, project: item.project, origin: senderIn(mod, item, item.origin).title, subscribers: item.subscribers.map((each) => senderIn(mod, item, each).title), link: linkOf(mod, item) }
+function summaryOf(mod: Mod<InboxState>, item: Item, deliveries: Deliveries) {
+  const deliveredBy = deliveries[item.id]?.id
+  return {
+    id: item.id,
+    kind: item.kind,
+    status: statusOf(item, personIn(mod, item)),
+    ...(deliveredBy === undefined ? {} : { deliveredBy }),
+    ...(item.delivers === undefined ? {} : { delivers: item.delivers }),
+    title: current(item).title,
+    project: item.project,
+    origin: senderIn(mod, item, item.origin).title,
+    subscribers: item.subscribers.map((each) => senderIn(mod, item, each).title),
+    link: linkOf(mod, item),
+  }
 }

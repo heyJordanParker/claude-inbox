@@ -10,8 +10,6 @@ import { serve, type Options, type Serving } from './server.js'
 
 const usage = 'Usage: inbox serve --data <folder>\n       inbox --version'
 
-const programCheckMs = 1000
-
 function save(path: string, saved: Server): void {
   const partial = `${path}.${process.pid}.tmp`
   writeFileSync(partial, `${JSON.stringify(saved)}\n`, { mode: 0o600 })
@@ -69,23 +67,3 @@ function stopServing(): void {
 }
 
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, stopServing)
-
-function identityOf(path: string): string {
-  const found = statSync(path, { throwIfNoEntry: false })
-  return found === undefined ? 'missing' : `${found.ino}:${found.size}:${found.mtimeMs}`
-}
-
-if (Bun.main.startsWith('/$bunfs/')) {
-  const startedAs = process.argv0.includes('/') ? process.argv0 : process.execPath
-  const started = identityOf(startedAs)
-  let checked = started
-  const checking = setInterval(() => {
-    const now = identityOf(startedAs)
-    if (now !== started && now === checked) {
-      clearInterval(checking)
-      console.error(`inbox serve: ${startedAs} changed, so this copy stops and cmod starts the new one.`)
-      stopServing()
-    }
-    checked = now
-  }, programCheckMs)
-}

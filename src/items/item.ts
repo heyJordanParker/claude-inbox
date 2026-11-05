@@ -154,6 +154,7 @@ export type Item = {
   readonly subscribers: readonly Subscriber[]
   readonly revisions: readonly Revision[]
   readonly withdrawal?: Withdrawal
+  readonly delivers?: readonly string[]
   readonly updatedAt: string
 }
 
@@ -221,24 +222,33 @@ export function isFollowed(item: Item, senders: Senders): boolean {
   return item.subscribers.some(({ session }) => isRunning(session, senders))
 }
 
-export function isArchived(item: Item, person: Person, senders: Senders): boolean {
-  return !isOpen(item, person) || !isFollowed(item, senders)
+export type Deliveries = Readonly<Record<string, Item>>
+
+export function deliveriesOf(items: readonly Item[]): Deliveries {
+  const revised = new Map(items.map((item) => [item.id, revisedAt(item)]))
+  const reports = items.filter((item) => item.delivers !== undefined).sort((a, b) => revisedAt(a).localeCompare(revisedAt(b)))
+  const delivered = reports.flatMap((report) => (report.delivers ?? []).filter((id) => (revised.get(id) ?? '') <= revisedAt(report)).map((id) => [id, report] as const))
+  return Object.fromEntries(delivered.reverse())
+}
+
+export function isArchived(item: Item, person: Person, senders: Senders, deliveries: Deliveries): boolean {
+  return !isOpen(item, person) || deliveries[item.id] !== undefined || !isFollowed(item, senders)
 }
 
 export function byQueue(person: PersonFiles): (a: Item, b: Item) => number {
   return (a, b) => personOf(person, a).queuedAt.localeCompare(personOf(person, b).queuedAt)
 }
 
-export function queue(items: readonly Item[], person: PersonFiles, senders: Senders): Item[] {
-  return items.filter((item) => !isArchived(item, personOf(person, item), senders)).sort(byQueue(person))
+export function queue(items: readonly Item[], person: PersonFiles, senders: Senders, deliveries: Deliveries): Item[] {
+  return items.filter((item) => !isArchived(item, personOf(person, item), senders, deliveries)).sort(byQueue(person))
 }
 
-export function archive(items: readonly Item[], person: PersonFiles, senders: Senders): Item[] {
-  return items.filter((item) => isArchived(item, personOf(person, item), senders)).sort((a, b) => cardTime(b, personOf(person, b)).localeCompare(cardTime(a, personOf(person, a))))
+export function archive(items: readonly Item[], person: PersonFiles, senders: Senders, deliveries: Deliveries): Item[] {
+  return items.filter((item) => isArchived(item, personOf(person, item), senders, deliveries)).sort((a, b) => cardTime(b, personOf(person, b), deliveries).localeCompare(cardTime(a, personOf(person, a), deliveries)))
 }
 
-export function shownOf(items: readonly Item[], person: PersonFiles, senders: Senders, viewing: string | null): Item | undefined {
-  const listed = queue(items, person, senders)
+export function shownOf(items: readonly Item[], person: PersonFiles, senders: Senders, deliveries: Deliveries, viewing: string | null): Item | undefined {
+  const listed = queue(items, person, senders, deliveries)
   return items.find((item) => item.id === viewing) ?? listed.find((item) => !isWithAgent(item, personOf(person, item))) ?? listed[0]
 }
 
@@ -309,6 +319,9 @@ export const wording = {
   unchanged: 'unchanged',
   archive: 'Archive',
   agentClosed: 'agent closed',
+  delivered: 'delivered',
+  delivers: 'Delivers',
+  deliveredBy: 'Delivered by',
   changesRequested: 'changes requested',
   inboxZero: 'Inbox zero',
   emptyHint: "An agent's next proposal, choice, question, or report shows here as it arrives.",
@@ -349,25 +362,46 @@ export function closedLine(closing: Answer | Withdrawal, now: number): string {
   return `${closedWord(closing)} · ${ago(closing.at, now)}`
 }
 
-export function positionLine(listed: readonly Item[], shown: Item, person: Person, now: number): string | undefined {
+export function positionLine(listed: readonly Item[], shown: Item, person: Person, deliveries: Deliveries, now: number): string | undefined {
   if (closingOf(shown, person) !== undefined) return undefined
   const index = listed.indexOf(shown)
-  return `${index === -1 ? wording.agentClosed : `${index + 1} of ${listed.length}`} · ${whenLine(shown, person, now)}`
+  const place = index !== -1 ? `${index + 1} of ${listed.length}` : deliveries[shown.id] === undefined ? wording.agentClosed : wording.delivered
+  return `${place} · ${whenLine(shown, person, now)}`
+}
+
+export function threadLine(item: Item): string | undefined {
+  const count = item.delivers?.length ?? 0
+  return count === 0 ? undefined : `${wording.delivers.toLowerCase()} ${plural(count, 'item')}`
+}
+
+export function threadStatusOf(item: Item, person: Person, senders: Senders, deliveries: Deliveries): CardStatus | undefined {
+  const status = cardStatusOf(item, person, senders, deliveries)
+  return status?.word === wording.delivered ? undefined : status
+}
+
+export type Thread = { readonly deliveredBy?: Item; readonly delivers: readonly Item[] }
+
+export function threadOf(item: Item, items: readonly Item[], deliveries: Deliveries): Thread {
+  const deliveredBy = deliveries[item.id]
+  const delivers = (item.delivers ?? []).flatMap((id) => items.filter((each) => each.id === id))
+  return { ...(deliveredBy === undefined ? {} : { deliveredBy }), delivers }
 }
 
 export type CardStatus = { readonly word: string; readonly tone: 'unseen' | 'requested' | 'archived' }
 
-export function cardStatusOf(item: Item, person: Person, senders: Senders): CardStatus | undefined {
+export function cardStatusOf(item: Item, person: Person, senders: Senders, deliveries: Deliveries): CardStatus | undefined {
   const closing = closingOf(item, person)
   if (closing !== undefined) return { word: closedWord(closing), tone: 'archived' }
-  if (isArchived(item, person, senders)) return { word: wording.agentClosed, tone: 'archived' }
+  if (deliveries[item.id] !== undefined) return { word: wording.delivered, tone: 'archived' }
+  if (isArchived(item, person, senders, deliveries)) return { word: wording.agentClosed, tone: 'archived' }
   if (isWithAgent(item, person)) return { word: wording.changesRequested, tone: 'requested' }
   const unseen = unseenOf(item, person)
   return unseen === undefined ? undefined : { word: unseen, tone: 'unseen' }
 }
 
-export function cardTime(item: Item, person: Person): string {
-  return closingOf(item, person)?.at ?? revisedAt(item)
+export function cardTime(item: Item, person: Person, deliveries: Deliveries): string {
+  const delivered = deliveries[item.id]
+  return closingOf(item, person)?.at ?? (delivered === undefined ? revisedAt(item) : revisedAt(delivered))
 }
 
 export function closingLines(item: Item, closing: Answer | Withdrawal, senders: Senders): string[] {

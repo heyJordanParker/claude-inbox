@@ -417,6 +417,57 @@ button {
   color: oklch(var(--ink-l) var(--ink-c) var(--hue-requested));
 }
 
+.card__thread {
+  color: var(--text-faint);
+}
+
+.thread {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.thread__link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--text) 4%, var(--surface));
+  color: inherit;
+  text-decoration: none;
+  transition: background-color 150ms var(--ease);
+}
+
+.thread__link:hover {
+  background: color-mix(in oklch, var(--text) 8%, var(--surface));
+}
+
+.thread__link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.thread__kind {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: oklch(var(--ink-l) var(--ink-c) var(--hue));
+}
+
+.thread__title {
+  flex: 1 1 24ch;
+  min-inline-size: 0;
+  font-weight: 600;
+}
+
+.thread__status {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
 .card[data-archived='true'] :is(.card__from, .card__title, .card__kind, .sender) {
   font-weight: 500;
   color: var(--text-faint);

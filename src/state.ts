@@ -1,5 +1,5 @@
 import type { Heard } from './items/heard.js'
-import type { Item, Note, PersonFiles, Scope, Senders } from './items/item.js'
+import type { Item, PersonFiles, Scope, Senders } from './items/item.js'
 
 export type FileView = { readonly status: 'read'; readonly text: string; readonly isDiff: boolean } | { readonly status: 'failed'; readonly error: string }
 
@@ -22,13 +22,9 @@ export type InboxState = {
     file: ShownFile | null
     heard: Heard
   }
-  global: {
-    notes: Readonly<Record<string, readonly Note[]>>
-  }
 }
 
 export const initialState: InboxState = {
   memory: { items: [], person: {}, repositories: {}, senders: {} },
   session: { scope: 'session', viewing: null, folds: {}, editing: null, typed: {}, isArchiveOpen: false, file: null, heard: {} },
-  global: { notes: {} },
 }

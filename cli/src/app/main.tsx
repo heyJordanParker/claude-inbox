@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { viewingAfterAnswer, type Given } from '../../../src/items/answers.js'
 import { unfollowedWarning } from '../../../src/items/heard.js'
-import { archive, isInScope, narrowestScope, nextAfter, personOf, positionLine, queue, revisionOf, scopes, shownOf, unseenOf, type Item, type Note, type Person, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
+import { archive, deliveriesOf, isInScope, narrowestScope, nextAfter, personOf, positionLine, queue, revisionOf, scopes, shownOf, threadOf, threadStatusOf, unseenOf, type Item, type Note, type Person, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
 import type { Folds } from '../../../src/items/tree.js'
 import { api, follow, NoAnswer, Refused, signIn, type ChangedEvent, type Connection, type Following } from './api.js'
 import { FileView, type ShownFile } from './drawing.js'
@@ -108,8 +108,9 @@ function App(): ReactNode {
   const scopedTo = (each: Scope) => (data?.items ?? []).filter((item) => isInScope(item, each, place, repositories))
   const widest = viewing === null ? scope : narrowestScope(offered, scope, viewing, scopedTo)
   const items = scopedTo(widest)
-  const listed = queue(items, person, senders)
-  const shown = shownOf(items, person, senders, viewing)
+  const deliveries = deliveriesOf(data?.items ?? [])
+  const listed = queue(items, person, senders, deliveries)
+  const shown = shownOf(items, person, senders, deliveries, viewing)
   const next = shown === undefined ? undefined : nextAfter(listed, shown)
   const latestShown = useRef<Item | undefined>(undefined)
   latestShown.current = shown
@@ -263,15 +264,16 @@ function App(): ReactNode {
         <List
           scopes={offered}
           scope={widest}
-          countIn={(each) => queue(scopedTo(each), person, senders).length}
+          countIn={(each) => queue(scopedTo(each), person, senders, deliveries).length}
           onScope={(each) => {
             setScope(each)
             setViewing(null)
           }}
           listed={listed}
-          archived={archive(items, person, senders)}
+          archived={archive(items, person, senders, deliveries)}
           person={person}
           senders={senders}
+          deliveries={deliveries}
           shownId={shown?.id}
           onView={(id) => view(id)}
         />
@@ -289,7 +291,10 @@ function App(): ReactNode {
             item={shown}
             person={personOf(person, shown)}
             senders={data.senders}
-            place={positionLine(listed, shown, personOf(person, shown), Date.now())}
+            thread={threadOf(shown, data.items, deliveries)}
+            statusOf={(each) => threadStatusOf(each, personOf(person, each), senders, deliveries)}
+            onView={(id) => view(id)}
+            place={positionLine(listed, shown, personOf(person, shown), deliveries, Date.now())}
             next={next}
             folds={folds}
             editing={editing}

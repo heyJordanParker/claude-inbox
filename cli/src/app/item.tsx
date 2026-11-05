@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactElement, type ReactNode, type Re
 import Markdown from 'react-markdown'
 import { actionsOf, type Action, type Given } from '../../../src/items/answers.js'
 import { kindOf } from '../../../src/items/drawings.js'
-import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, noteOn, notePlaceholder, plural, precedentLine, senderOf, sentCorrections, unseenOf, wording, type Drawing, type Idea, type Item, type Note, type Person, type Senders } from '../../../src/items/item.js'
+import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, noteOn, notePlaceholder, plural, precedentLine, senderOf, sentCorrections, unseenOf, wording, type CardStatus, type Drawing, type Idea, type Item, type Note, type Person, type Senders, type Thread } from '../../../src/items/item.js'
 import { childrenOf, drawingPath, evidenceOf, evidencePath, foldedLine, foldKey, folds, headingOf, ideaPath, ideasOf, isDrawingUnchanged, isLeftOpen, isUnfolded, readingOf, rootGroups, summaryOf, titleOf, unseenAt, withRemoved, type Folds, type Node, type Part, type Reading } from '../../../src/items/tree.js'
 import { DrawingSubject, DrawingView, type OpenFile } from './drawing.js'
 
@@ -423,6 +423,51 @@ function Closing({ item, person, senders }: { readonly item: Item; readonly pers
   )
 }
 
+type Linked = { readonly statusOf: (item: Item) => CardStatus | undefined; readonly onView: (id: string) => void }
+
+function ThreadLinks({ items, statusOf, onView }: Linked & { readonly items: readonly Item[] }): ReactNode {
+  return (
+    <ul className="thread">
+      {items.map((each) => {
+        const status = statusOf(each)
+        return (
+          <li key={each.id}>
+            <a className="thread__link" href={`/items/${encodeURIComponent(each.id)}${location.search}`} onClick={(event) => {
+              event.preventDefault()
+              onView(each.id)
+            }}>
+              <span className="thread__kind" data-kind={each.kind}>
+                {kindName(each)}
+              </span>
+              <span className="thread__title">
+                <Title title={current(each).title} />
+              </span>
+              {status === undefined ? null : <span className="thread__status">{status.word}</span>}
+            </a>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+function ThreadParts({ thread, ...linked }: Linked & { readonly thread: Thread }): ReactNode {
+  return (
+    <>
+      {thread.deliveredBy === undefined ? null : (
+        <Section label={wording.deliveredBy}>
+          <ThreadLinks items={[thread.deliveredBy]} {...linked} />
+        </Section>
+      )}
+      {thread.delivers.length === 0 ? null : (
+        <Section label={wording.delivers}>
+          <ThreadLinks items={thread.delivers} {...linked} />
+        </Section>
+      )}
+    </>
+  )
+}
+
 function EarlierNotes({ shared }: { readonly shared: Shared }): ReactNode {
   const earlier = earlierNotes(shared.item, shared.person)
   if (earlier.length === 0) return null
@@ -508,7 +553,7 @@ function Actions({ shared, next }: { readonly shared: Shared; readonly next: Ite
   )
 }
 
-export function ItemView({ item, person, senders, place, next, folds: openFolds, editing, setEditing, actions, onFile }: { readonly item: Item; readonly person: Person; readonly senders: Senders; readonly place: string | undefined; readonly next: Item | undefined; readonly folds: Folds; readonly editing: string | null; readonly setEditing: (key: string | null) => void; readonly actions: ItemActions; readonly onFile: OpenFile }): ReactNode {
+export function ItemView({ item, person, senders, thread, statusOf, onView, place, next, folds: openFolds, editing, setEditing, actions, onFile }: Linked & { readonly item: Item; readonly person: Person; readonly senders: Senders; readonly thread: Thread; readonly place: string | undefined; readonly next: Item | undefined; readonly folds: Folds; readonly editing: string | null; readonly setEditing: (key: string | null) => void; readonly actions: ItemActions; readonly onFile: OpenFile }): ReactNode {
   const content = current(item)
   const shared: Shared = { ...readingOf(item, person, openFolds), editing, setEditing, actions, onFile }
   const unseen = unseenOf(item, person)
@@ -531,6 +576,7 @@ export function ItemView({ item, person, senders, place, next, folds: openFolds,
       </header>
       <div className="item__body">
         <Closing item={item} person={person} senders={senders} />
+        <ThreadParts thread={thread} statusOf={statusOf} onView={onView} />
         <Sent item={item} person={person} />
         <EarlierNotes shared={shared} />
         <Lead shared={shared} />

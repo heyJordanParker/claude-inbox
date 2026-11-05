@@ -2,14 +2,12 @@ import { expect, setSystemTime, test } from 'bun:test'
 import type { HookStream, ProcessSpawnChunk, ProcessSpawnRequest, ProcessSpawnResult } from 'claude-code'
 import { AbovePrompt } from '../node_modules/@cmodjs/core/mod.js'
 import { testMod, type FakeSession } from '../node_modules/@cmodjs/core/testing.js'
-import { converted } from '../src/items/formats.js'
 import type { Heard } from '../src/items/heard.js'
-import { cardStatusOf, isWithAgent, personOf, queue, senderOf, sendersOf, shownOf, statusOf, unseenOf, type Author, type Content, type Item, type Person } from '../src/items/item.js'
-import { itemMarkdown, parsePerson, personMarkdown, revisionMarkdown } from '../src/items/markdown.js'
+import { cardStatusOf, deliveriesOf, isWithAgent, personOf, queue, senderOf, sendersOf, shownOf, statusOf, unseenOf, type Author, type Content, type Item, type Person } from '../src/items/item.js'
+import { format, itemMarkdown, parsePerson, personMarkdown, revisionMarkdown } from '../src/items/markdown.js'
 import { revisedSince } from '../src/items/tree.js'
 import { idOfLink, itemLinks } from '../src/links.js'
 import { inbox } from '../src/mod.js'
-import type { InboxState } from '../src/state.js'
 
 const project = '/work'
 
@@ -41,22 +39,22 @@ const gitOutput = (argv: readonly string[]) => {
   return argv.includes('ls-tree') && argv.at(-1) === 'src/never.ts' ? '' : matchDiff
 }
 
-function question(subscribers: readonly Author[]): Omit<Item, 'subscribers'> & { readonly subscribers: readonly Author[] } & { readonly answers: readonly unknown[]; readonly lastRead: number; readonly queuedAt: string; readonly status: string } {
+function question(subscribers: readonly Author[]): Item {
   const origin = subscribers[0] ?? { session: 'planner' }
   return {
-    format: 2,
+    format,
     id: 'courses',
     kind: 'question',
     project,
     origin,
-    subscribers,
+    subscribers: subscribers.map((each) => ({ ...each, since: '2026-10-22T10:00:00.000Z' })),
     revisions: [{ ...origin, at: '2026-10-22T10:00:00.000Z', content: { kind: 'question', title: 'Do we want courses?', why: 'It decides the schema' } }],
-    answers: [],
-    lastRead: -1,
-    queuedAt: '2026-10-22T10:00:00.000Z',
     updatedAt: '2026-10-22T10:00:00.000Z',
-    status: 'open',
   }
+}
+
+function stored(...items: readonly Item[]): Record<string, string> {
+  return Object.fromEntries(items.map((item) => [`${itemsFolder}/${item.id}.md`, itemMarkdown(item)]))
 }
 
 const matchHunk = ['@@ -1,3 +1,3 @@', ' export function check(expr: Expr): Type {', '-  return guess(expr)', '+  return infer(expr)', ' }'].join('\n')
@@ -71,12 +69,12 @@ function serving(address: string): HookStream<ProcessSpawnChunk, ProcessSpawnRes
   return Object.assign(written(), { result: new Promise<ProcessSpawnResult>(() => undefined) }) as HookStream<ProcessSpawnChunk, ProcessSpawnResult>
 }
 
-function tested(options: { readonly sessions?: readonly FakeSession[]; readonly files?: Record<string, string>; readonly notes?: InboxState['global']['notes']; readonly heard?: Heard; readonly isFirstStart?: true } = {}) {
+function tested(options: { readonly sessions?: readonly FakeSession[]; readonly files?: Record<string, string>; readonly heard?: Heard; readonly isFirstStart?: true } = {}) {
   const mod = testMod(inbox, {
     projectRoot: project,
     files: { ...(options.isFirstStart === true ? {} : { [deliveringSince]: '2026-10-01T00:00:00.000Z\n' }), ...files, ...options.files },
     sessions: [{ id: 'test-session', title: 'php#', isRunning: true }, { id: 'planner', title: 'schema planning' }, ...(options.sessions ?? [])],
-    state: { ...(options.notes === undefined ? {} : { global: { notes: options.notes } }), ...(options.heard === undefined ? {} : { session: { heard: options.heard } }) },
+    state: options.heard === undefined ? {} : { session: { heard: options.heard } },
   })
   mod.fakes.process.run = async (argv) => ({ exitCode: 0, stdout: argv[0] === 'git' ? gitOutput(argv) : JSON.stringify(argv.includes('--revision') ? committed() : traced()), stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
   mod.fakes.process.spawn = () => serving('127.0.0.1:4800')
@@ -85,7 +83,9 @@ function tested(options: { readonly sessions?: readonly FakeSession[]; readonly 
 
 type Tested = ReturnType<typeof tested>
 
-const shownId = (mod: Tested) => shownOf(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders, mod.state.session.viewing)?.id
+const shownId = (mod: Tested) => shownOf(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders, deliveriesOf(mod.state.memory.items), mod.state.session.viewing)?.id
+
+const listed = (mod: Tested) => queue(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders, deliveriesOf(mod.state.memory.items))
 
 const personIn = (mod: Tested, item: Item): Person => personOf(mod.state.memory.person, item)
 
@@ -336,7 +336,7 @@ test('approving tells the proposing session and closes the item', async () => {
   expect(mod.shown.prompts).toHaveLength(1)
   expect(mod.shown.prompts[0]).toContain(item.id)
   expect(statusAt(mod)).toBe('answered')
-  expect(queue(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders)).toEqual([])
+  expect(listed(mod)).toEqual([])
 })
 
 const serverFile = `${itemsFolder.slice(0, -'/items'.length)}/server.json`
@@ -647,7 +647,7 @@ test('Next → puts the item behind the rest, marks it read, and opens the next 
   const mod = tested()
   const first = await filed(mod, 'ask_question', { title: 'First question', why: 'It unlocks the first slice' })
   const second = await filed(mod, 'ask_question', { title: 'Second question', why: 'It unlocks the second slice' })
-  const queued = () => queue(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders).map((each) => [each.id, unseenOf(each, personIn(mod, each))])
+  const queued = () => listed(mod).map((each) => [each.id, unseenOf(each, personIn(mod, each))])
   expect(shownId(mod)).toBe(second.id)
 
   await mod.shown.page.press('next')
@@ -718,7 +718,7 @@ test('an agent revises a rejected proposal, choice, and question, and each revis
   const statuses = () =>
     rejected.map((id) => {
       const item = mod.state.memory.items.find((each) => each.id === id)
-      return item === undefined ? 'gone' : [statusOf(item, personIn(mod, item)), cardStatusOf(item, personIn(mod, item), mod.state.memory.senders)?.word]
+      return item === undefined ? 'gone' : [statusOf(item, personIn(mod, item)), cardStatusOf(item, personIn(mod, item), mod.state.memory.senders, deliveriesOf(mod.state.memory.items))?.word]
     })
   expect(statuses()).toEqual([
     ['answered', 'rejected'],
@@ -738,7 +738,7 @@ test('an agent revises a rejected proposal, choice, and question, and each revis
     ['open', 'changed'],
     ['open', 'changed'],
   ])
-  expect(queue(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders).map((each) => each.id).sort()).toEqual([...rejected].sort())
+  expect(listed(mod).map((each) => each.id).sort()).toEqual([...rejected].sort())
   const one = await mod.callTool('read', { id: proposed.id })
   const read = JSON.parse('result' in one ? String(one.result) : '{}') as { status: string; revision: number; answers: { kind: string; revision: number }[] }
   expect(read.status).toBe('open')
@@ -882,40 +882,6 @@ test('a renamed Problem and Solution keep their old titles to show', () => {
   })
 })
 
-test('an item a 0.1.0 inbox stored reads as open, its correction keeps it with the agent, its content becomes ideas, and its diagram is drawn', () => {
-  const stored = {
-    ...question([{ session: 'planner' }]),
-    format: undefined,
-    kind: 'proposal',
-    status: 'corrected',
-    answers: [{ kind: 'correct', target: 'p0', words: 'Name it', revision: 0, by: 'person', at: '2026-10-22T10:05:00.000Z' }],
-    revisions: [
-      {
-        session: 'planner',
-        at: '2026-10-22T10:00:00.000Z',
-        content: {
-          kind: 'proposal',
-          title: 'An old proposal',
-          goal: 'Enums ship',
-          problems: [{ title: 'A default is demanded', summary: 'Every match ends in one', impact: 'Users write dead code', solution: { title: 'No default', summary: 'The compiler proves it', idea: 'A full match needs none.', capabilities: ['A match compiles without a default'], drawings: [{ kind: 'diagram', mermaid: 'graph LR\n  Match --> Check' }] } }],
-        },
-      },
-    ],
-  }
-  const { item, person } = converted(stored, undefined, [])
-  const content = contentOf(item)
-  const ideas = content?.kind === 'proposal' ? (content.problems[0]?.solution?.ideas ?? []) : []
-  const diagram = ideas.at(-1)?.drawing
-
-  const waiting = converted({ ...stored, status: 'waiting', answers: [] }, undefined, [])
-  expect(person === undefined ? 'missing' : statusOf(item, person)).toBe('open')
-  expect(person !== undefined && isWithAgent(item, person)).toBe(true)
-  expect(waiting.person === undefined ? 'missing' : statusOf(waiting.item, waiting.person)).toBe('open')
-  expect(content?.kind === 'proposal' ? content.problems[0]?.ideas.map((each) => each.idea) : []).toEqual(['Every match ends in one', 'Users write dead code'])
-  expect(ideas.map((each) => each.idea)).toEqual(['The compiler proves it', 'A full match needs none.', '- A match compiles without a default', 'How the parts connect.'])
-  expect(diagram?.kind === 'diagram' && diagram.drawn !== diagram.mermaid && diagram.drawn !== '').toBe(true)
-})
-
 test('a diagram is drawn when the agent files it, and Mermaid the inbox cannot draw is refused', async () => {
   const mod = tested()
   const withDiagram = (mermaid: string) => withIdeas([...solution.ideas, { idea: 'The check runs after inference.', drawing: { kind: 'diagram', mermaid } }])
@@ -993,7 +959,7 @@ const loaded = (mod: Tested, id: string): Item => {
 const answerNumbers = (prompts: readonly string[]) => prompts.map((each) => /\(courses\), answer (\d+)/.exec(each)?.[1])
 
 test('an answer another writer stores arrives once at a subscriber, and never at a session that does not follow the item', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([here])), [`${itemsFolder}/pricing.json`]: JSON.stringify({ ...question([planner]), id: 'pricing' }) } })
+  const mod = tested({ files: stored(question([here]), { ...question([planner]), id: 'pricing' }) })
   const tick = ticking(mod)
   await mod.start()
   await written(mod, `${personFolder}/courses.md`, answered({ kind: 'answer', words: 'Yes', at: '2026-11-01T00:00:00.000Z' }))
@@ -1006,7 +972,7 @@ test('an answer another writer stores arrives once at a subscriber, and never at
 })
 
 test("this session's own revision and withdrawal never come back to it, and another session's revision arrives as a note", async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([planner, here])) } })
+  const mod = tested({ files: { ...stored(question([planner, here])) } })
   const tick = ticking(mod)
   await mod.start()
   await mod.callTool('revise', { id: 'courses', question: { title: 'Do we want paid courses?', why: 'It decides the schema' } })
@@ -1025,7 +991,7 @@ test("this session's own revision and withdrawal never come back to it, and anot
 })
 
 test('a restart repeats only the answer whose send never finished, and delivers an answer given while the session was down', async () => {
-  const item = { [`${itemsFolder}/courses.json`]: JSON.stringify(question([here])) }
+  const item = stored(question([here]))
   const first = requested('Say which courses', '2026-11-01T00:00:00.000Z')
   const second = requested('Say who pays', '2026-11-01T01:00:00.000Z')
   const before = tested({ files: { ...item, [`${personFolder}/courses.md`]: answered(first, second) } })
@@ -1046,7 +1012,7 @@ test('a restart repeats only the answer whose send never finished, and delivers 
 })
 
 test('a send still in flight at /clear records no mark in the session that follows, which never had the prompt', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([here])), [`${personFolder}/courses.md`]: answered({ kind: 'answer', words: 'Yes', at: '2026-11-01T00:00:00.000Z' }) } })
+  const mod = tested({ files: { ...stored(question([here])), [`${personFolder}/courses.md`]: answered({ kind: 'answer', words: 'Yes', at: '2026-11-01T00:00:00.000Z' }) } })
   let release = () => undefined as void
   const held = new Promise<void>((resolve) => (release = resolve))
   let reached = () => undefined as void
@@ -1067,7 +1033,7 @@ test('a send still in flight at /clear records no mark in the session that follo
 })
 
 test('an answer at T1 still arrives once when another session revision at T2 is read first, in an earlier load', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([planner, here])) } })
+  const mod = tested({ files: { ...stored(question([planner, here])) } })
   const tick = ticking(mod)
   await mod.start()
   const fresh = loaded(mod, 'courses')
@@ -1085,7 +1051,7 @@ test('an answer at T1 still arrives once when another session revision at T2 is 
 
 test('a live session whose heard holds one mark per item hears no answer again after the update', async () => {
   const at = '2026-11-01T01:00:00.000Z'
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([here])), [`${personFolder}/courses.md`]: answered({ kind: 'answer', words: 'Yes', at }) }, heard: { courses: { at, count: 1 } } })
+  const mod = tested({ files: { ...stored(question([here])), [`${personFolder}/courses.md`]: answered({ kind: 'answer', words: 'Yes', at }) }, heard: { courses: { at, count: 1 } } })
   await mod.start()
   await mod.settle()
 
@@ -1093,8 +1059,7 @@ test('a live session whose heard holds one mark per item hears no answer again a
 })
 
 test('the first start of this release writes delivering-since and sends no answer given before it', async () => {
-  const stored = { ...question([here]), status: 'answered', answers: [{ kind: 'answer', words: 'Yes', revision: 0, by: 'person', at: '2026-10-22T10:05:00.000Z' }] }
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(stored) }, isFirstStart: true })
+  const mod = tested({ files: { ...stored(question([here])), [`${personFolder}/courses.md`]: answered({ kind: 'answer', words: 'Yes', at: '2026-10-22T10:05:00.000Z' }) }, isFirstStart: true })
   const startedAt = new Date().toISOString()
   await mod.start()
   await mod.settle()
@@ -1104,7 +1069,7 @@ test('the first start of this release writes delivering-since and sends no answe
   expect(mod.shown.prompts).toEqual([])
 })
 
-test('each session runs inbox serve on the data folder through cmod program, so one copy serves the whole computer', async () => {
+test('each session runs inbox serve on the data folder as a service of the computer, so one copy serves the browser whenever the person is logged in', async () => {
   const mod = tested()
   const spawned: ProcessSpawnRequest[] = []
   mod.fakes.process.spawn = (request) => {
@@ -1114,11 +1079,11 @@ test('each session runs inbox serve on the data folder through cmod program, so 
   await mod.start()
   await mod.settle()
 
-  expect(spawned.map((request) => request.argv)).toEqual([['/test/home/.local/share/cmod/programs/cmod', 'program', 'inbox', '--no-wait', '--', 'inbox', 'serve', '--data', '/test/home/.local/share/cmod/data/inbox']])
+  expect(spawned.map((request) => request.argv)).toEqual([['/test/home/.local/share/cmod/programs/cmod', 'program', 'inbox', '--service', '--', 'inbox', 'serve', '--data', '/test/home/.local/share/cmod/data/inbox']])
 })
 
 test('an item whose files were deleted drops out of memory and out of read', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([planner])), [`${itemsFolder}/pricing.json`]: JSON.stringify({ ...question([planner]), id: 'pricing' }), [`${personFolder}/pricing.md`]: answered() } })
+  const mod = tested({ files: { ...stored(question([planner]), { ...question([planner]), id: 'pricing' }), [`${personFolder}/courses.md`]: answered(), [`${personFolder}/pricing.md`]: answered() } })
   await mod.start()
   const { list } = mod.fakes.fs
   mod.fakes.fs.list = async (path) => ((await list?.(path)) ?? []).filter((entry) => entry.name !== 'pricing.md')
@@ -1130,7 +1095,7 @@ test('an item whose files were deleted drops out of memory and out of read', asy
 })
 
 test('subscribe and unsubscribe change who hears an item, and revising subscribes the reviser', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'planner' }])) } })
+  const mod = tested({ files: { ...stored(question([{ session: 'planner' }])) } })
   await mod.start()
   const hearing = () => mod.state.memory.items[0]?.subscribers.map((each) => each.session)
 
@@ -1158,6 +1123,59 @@ test('read lists what is open with each link, and gives one item with every answ
   expect(read.answers.map(({ kind, words, revision }) => ({ kind, words, revision }))).toEqual([{ kind: 'answer', words: 'Yes', revision: 2 }])
 })
 
+test("a report that delivers a proposal and an earlier report is the one row in the list, the two leave read's open list, and the agent hears what left", async () => {
+  const mod = tested()
+  const proposed = await filed(mod, 'propose', proposal)
+  const first = await filed(mod, 'report', report)
+  const answer = await mod.callTool('report', { ...report, title: 'The inbox ships, round two', delivers: [proposed.id, first.id] })
+  const second = loaded(mod, 'the-inbox-ships-round-two')
+  const open = await mod.callTool('read', {})
+  const one = await mod.callTool('read', { id: proposed.id })
+
+  expect('result' in answer && answer.result).toContain(`It delivers ${proposed.id}, ${first.id}, which leave the user's list with it.`)
+  expect(second.delivers).toEqual([proposed.id, first.id])
+  expect(await fileText(mod, `${itemsFolder}/${second.id}.md`)).toContain(`\ndelivers: ["${proposed.id}","${first.id}"]\n`)
+  expect(listed(mod).map((each) => each.id)).toEqual([second.id])
+  expect((JSON.parse('result' in open ? String(open.result) : '[]') as { id: string; delivers?: string[] }[]).map(({ id, delivers }) => [id, delivers])).toEqual([[second.id, [proposed.id, first.id]]])
+  expect(JSON.parse('result' in one ? String(one.result) : '{}')).toEqual(expect.objectContaining({ status: 'open', deliveredBy: second.id }))
+})
+
+test('a report cannot deliver an item the person rejected, one waiting on requested changes, or an id the inbox does not hold, and nothing is filed', async () => {
+  const mod = tested()
+  const tick = ticking(mod)
+  const rejected = await filed(mod, 'propose', proposal)
+  const waiting = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
+  await written(mod, `${personFolder}/${rejected.id}.md`, answered({ kind: 'reject', at: '2026-11-01T00:00:00.000Z' }))
+  await written(mod, `${personFolder}/${waiting.id}.md`, answered(requested('Say which courses', '2026-11-01T00:00:00.000Z')))
+  await tick()
+  const count = mod.state.memory.items.length
+
+  expect(await refusal(mod, 'report', { ...report, delivers: [rejected.id] })).toContain(`The user rejected ${rejected.id}, so this report cannot deliver it.`)
+  expect(await refusal(mod, 'report', { ...report, delivers: [waiting.id] })).toContain(`The user is waiting on your changes to ${waiting.id}, so this report cannot deliver it.`)
+  expect(await refusal(mod, 'report', { ...report, delivers: ['gone'] })).toContain('The inbox has nothing with the id gone.')
+  expect(mod.state.memory.items).toHaveLength(count)
+})
+
+test('a delivered item names its report, and the report lists what it delivers, each one press away in the Sidebar', async () => {
+  const mod = tested()
+  const proposed = await filed(mod, 'propose', proposal)
+  const shipped = await filed(mod, 'report', { ...report, delivers: [proposed.id] })
+
+  const reportLines = (await mod.shown.page.lines()).join('\n')
+  await mod.shown.page.press(`thread:${shipped.id}:${proposed.id}`)
+  const proposalLines = (await mod.shown.page.lines()).join('\n')
+
+  expect(reportLines).toContain('Delivers')
+  expect(reportLines).toContain('Proposal · Exhaustive match needs no default')
+  expect(reportLines).not.toContain('Exhaustive match needs no default · delivered')
+  expect(shownId(mod)).toBe(proposed.id)
+  expect(proposalLines).toContain('delivered · ')
+  expect(proposalLines).toContain('Delivered by')
+  expect(proposalLines).toContain('Report · The inbox ships')
+  await mod.shown.page.press(`thread:${proposed.id}:${shipped.id}`)
+  expect(shownId(mod)).toBe(shipped.id)
+})
+
 test('a link to an item in a reply names that item, and other links are left alone', () => {
   const reply = `Read [the proposal](file://${itemsFolder}/courses.md) and [the docs](https://example.com).`
 
@@ -1168,7 +1186,7 @@ test('a link to an item in a reply names that item, and other links are left alo
 test('an item another session wrote loads when the inbox starts, and an item file that does not read as an item is skipped, so read still answers', async () => {
   const mod = tested({
     files: {
-      [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'planner' }])),
+      ...stored(question([{ session: 'planner' }])),
       [`${itemsFolder}/half-written.md`]: '---\nformat: 7\nkind: "quest',
       [`${itemsFolder}/no-revisions.md`]: '---\nformat: 7\nkind: "question"\nrevision: 2\n---\n# Lost\n\nIt names a revision it does not hold\n',
     },
@@ -1185,8 +1203,7 @@ test('an item another session wrote loads when the inbox starts, and an item fil
 })
 
 test('an answer to a revision another session replaced is refused, and the item keeps waiting', async () => {
-  const stored = question([{ session: 'planner' }])
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(stored) } })
+  const mod = tested({ files: stored(question([{ session: 'planner' }])) })
   await mod.type('/inbox')
   const fresh = loaded(mod, 'courses')
   const revised = { ...fresh, revisions: [...fresh.revisions, { ...fresh.origin, at: '2026-10-22T11:00:00.000Z', content: { kind: 'question', title: 'Do we want paid courses?', why: 'It decides the schema' } as const }], updatedAt: '2026-10-22T11:00:00.000Z' }
@@ -1221,7 +1238,7 @@ test('a second press while an answer is sending is ignored, so the person sees n
   const first = mod.shown.page.press('reject')
   await isHeld
   const second = mod.shown.page.press('reject')
-  await new Promise((resolve) => setTimeout(resolve, 50))
+  await new Promise((resolve) => setTimeout(resolve, 500))
   release()
   await Promise.all([first, second])
 
@@ -1282,7 +1299,7 @@ test('a note on an item the browser answered meanwhile is refused with a warning
 })
 
 test('an item whose sessions all ended opens from the Archive, and an answer nobody is running to hear stays with the item, and the user is told', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'ended' }])) } })
+  const mod = tested({ files: stored(question([{ session: 'ended' }])) })
   await mod.type('/inbox')
   await mod.shown.page.press('scope:all')
   expect(shownId(mod)).toBeUndefined()
@@ -1297,7 +1314,7 @@ test('an item whose sessions all ended opens from the Archive, and an answer nob
 
 test("the inbox shows this session's items, and widens to the project with its worktrees, then to every project", async () => {
   const another = (id: string, at: string) => ({ ...question([{ session: 'planner' }]), id, project: at })
-  const mod = tested({ files: { [`${itemsFolder}/worktree.json`]: JSON.stringify(another('worktree', '/work/worktrees/design')), [`${itemsFolder}/elsewhere.json`]: JSON.stringify(another('elsewhere', '/elsewhere')) } })
+  const mod = tested({ files: stored(another('worktree', '/work/worktrees/design'), another('elsewhere', '/elsewhere')) })
   await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
 
   await expect(mod.shown.page.press('view:worktree')).rejects.toThrow('view:worktree')
@@ -1309,14 +1326,6 @@ test("the inbox shows this session's items, and widens to the project with its w
   await mod.shown.page.press('scope:all')
   await mod.shown.page.press('view:elsewhere')
   expect(shownId(mod)).toBe('elsewhere')
-})
-
-test('a stored report reads as the changes it shipped, and a stored screen sketch as a text example', () => {
-  const sketch = { kind: 'screen', screen: 'the Inbox page', sketch: 'Nothing waits for you' }
-  const content = { kind: 'report', title: 'The inbox ships', goal: 'One inbox', outcome: 'Reached, after one review.', problems: [{ title: 'Buried', ideas: [{ idea: 'Lost in replies.' }], solution: { title: 'One page holds them', ideas: [{ idea: 'It shows.', evidence: ['Reproduced live'], drawing: sketch }] } }] }
-  const stored = { ...question([{ session: 'planner' }]), format: 3, kind: 'report', revisions: [{ session: 'planner', at: '2026-10-22T10:00:00.000Z', content }] }
-
-  expect(contentOf(converted(stored, undefined, []).item)).toEqual({ kind: 'report', title: 'The inbox ships', goal: 'One inbox', changes: [{ title: 'One page holds them', drawing: { kind: 'example', language: 'text', code: 'Nothing waits for you' }, evidence: ['Reproduced live'] }] } as Content)
 })
 
 test('a long title gives an id cut between words, and a repeated title a numbered one', async () => {
@@ -1331,7 +1340,7 @@ test('a long title gives an id cut between words, and a repeated title a numbere
 
 test("an item stores only its session's id, and read names the session by its title and color now, never the title stored when it was filed", async () => {
   const filedEarlier = { ...question([{ session: 'renamed', title: 'propose mod', color: 'red' } as Author]), id: 'courses' }
-  const mod = testMod(inbox, { projectRoot: project, files: { ...files, [`${itemsFolder}/courses.json`]: JSON.stringify(filedEarlier) }, sessions: [{ id: 'test-session', title: 'php#', color: 'cyan', isRunning: true }, { id: 'renamed', title: 'inbox web view', color: 'green' }] })
+  const mod = testMod(inbox, { projectRoot: project, files: { ...files, ...stored(filedEarlier) }, sessions: [{ id: 'test-session', title: 'php#', color: 'cyan', isRunning: true }, { id: 'renamed', title: 'inbox web view', color: 'green' }] })
   mod.fakes.process.run = async (argv) => ({ exitCode: 0, stdout: argv[0] === 'git' ? gitOutput(argv) : '[]', stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
   await mod.callTool('ask_question', { title: 'Do we want paid courses?', why: 'It decides the schema' })
   const answer = await mod.callTool('read', {})
@@ -1381,31 +1390,8 @@ test('read gives an agent no notes the person is still writing', async () => {
   expect('result' in listed ? String(listed.result) : '').not.toContain('A draft the agent never sees')
 })
 
-test('the first start of this release converts each answer, read mark, queue time, and note into the Markdown person file, empties global notes, and logs it', async () => {
-  const stored = { ...question([{ session: 'planner' }]), format: 5, status: 'answered', lastRead: 0, queuedAt: '2026-10-22T10:02:00.000Z', answers: [{ kind: 'answer', words: 'Yes', revision: 0, by: 'person', at: '2026-10-22T10:05:00.000Z' }] }
-  const notes = { courses: [{ path: '', revision: 0, target: 'the whole item', words: 'Only paid ones' }] }
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(stored) }, notes })
-  await mod.start()
-
-  expect(parsePerson('courses', await fileText(mod, `${personFolder}/courses.md`))).toEqual({ notes: notes.courses, answers: [{ kind: 'answer', words: 'Yes', revision: 0, at: '2026-10-22T10:05:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:02:00.000Z' })
-  expect(mod.state.global.notes).toEqual({})
-  expect(mod.shown.debug.filter((line) => line.endsWith('converted 1 JSON file to Markdown'))).toHaveLength(1)
-  expect(statusAt(mod)).toBe('answered')
-})
-
-test('every start converts an item a session on the old release wrote as JSON, removes the JSON file, and keeps the person file it already has', async () => {
-  const kept = personMarkdown({ notes: [], answers: [], lastRead: 0, queuedAt: '2026-10-22T10:00:00.000Z' })
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'planner' }])), [`${personFolder}/courses.md`]: kept } })
-  await mod.start()
-
-  expect(await fileText(mod, `${personFolder}/courses.md`)).toBe(kept)
-  expect(await fileText(mod, `${itemsFolder}/courses.md`)).toStartWith('---\nformat: 7\nkind: "question"\nrevision: 1\n')
-  expect(mod.calls.filter(({ call, args }) => call === 'process.run' && (args[0] as readonly string[])[0] === 'rm').map(({ args }) => args[0])).toEqual([['rm', '-f', `${itemsFolder}/courses.json`]])
-  expect(mod.shown.debug.filter((line) => line.endsWith('converted 1 JSON file to Markdown'))).toHaveLength(1)
-})
-
 test('after /clear and after /resume, memory, the page, and read still hold every open item', async () => {
-  const mod = tested({ files: { [`${itemsFolder}/courses.json`]: JSON.stringify(question([{ session: 'planner' }])) } })
+  const mod = tested({ files: { ...stored(question([{ session: 'planner' }])) } })
   const item = await filed(mod, 'propose', proposal)
   const open = [item.id, 'courses'].sort()
 
