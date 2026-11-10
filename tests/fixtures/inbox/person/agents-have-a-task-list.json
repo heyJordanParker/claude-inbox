@@ -1,6 +1,0 @@
-{
-  "notes": [{ "path": "", "revision": 2, "target": "the whole item", "words": "Split the Board into goal and tasks pages" }],
-  "answers": [{ "kind": "correct", "corrections": [{ "path": "p0.s", "target": "Solution 1: A Board page lists each task", "words": "Show the goal too" }], "revision": 0, "at": "2026-10-26T08:30:00.000Z" }],
-  "lastRead": 1,
-  "queuedAt": "2026-10-26T08:00:00.000Z"
-}

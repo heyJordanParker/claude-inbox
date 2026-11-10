@@ -2,10 +2,10 @@ import { defineMod, device, fs, http, messageOf, process, sessions, type Mod } f
 import { program } from '../node_modules/@cmodjs/core/jobs/program.js'
 import { slashCommand } from '../node_modules/@cmodjs/core/jobs/slash-command.js'
 import { List, Paragraph } from '../node_modules/@cmodjs/core/ui/markdown.js'
-import { learnSenders, load, loadAll, personIn, scoped, startDelivery, storeOf, widenTo } from './actions.js'
+import { deliveriesIn, learnSenders, load, loadAll, personIn, scoped, startDelivery, storeOf, widenTo } from './actions.js'
 import { isWriting, markRead, setEditing, view } from './answers.js'
-import { current as contentOf, plural, shownOf, statusOf, type Item } from './items/item.js'
-import { convertJsonFiles, rereadMs, savedServer, serverPath, type Server } from './items/store.js'
+import { current as contentOf, shownOf, statusOf, type Item } from './items/item.js'
+import { rereadMs, savedServer, serverPath, type Server } from './items/store.js'
 import { LinkedBlock } from './links.js'
 import { filePage, showFile } from './pages/file.js'
 import { inboxPage } from './pages/inbox.js'
@@ -53,7 +53,7 @@ export const inbox = defineMod({
     const open = () => page.open({ focus: true })
     const toggle = async (current: Mod<InboxState>): Promise<void> => {
       if (!page.isShown) return open()
-      const left = shownOf(scoped(current), current.state.memory.person, current.state.memory.senders, current.state.session.viewing)
+      const left = shownOf(scoped(current), current.state.memory.person, current.state.memory.senders, deliveriesIn(current), current.state.session.viewing)
       setEditing(current, null)
       await Promise.all([page.close(), ...(left === undefined ? [] : [markRead(current, left)])])
     }
@@ -67,24 +67,13 @@ export const inbox = defineMod({
       if (item === undefined) return current.toast.warning(`The inbox has no item ${id}`)
       return show(current, id, true)
     }
-    const remove = async (path: string): Promise<void> => {
-      const removed = await process.run(['rm', '-f', path])
-      if (removed.exitCode !== 0) throw new Error(`rm ${path} exited ${removed.exitCode}: ${removed.stderr.trim()}`)
-    }
-    const convert = async (current: Mod<InboxState>): Promise<void> => {
-      const { converted, skipped } = await convertJsonFiles(store, current.state.global.notes, remove)
-      for (const line of skipped) current.log(`left ${line}`)
-      if (converted === 0) return
-      if (skipped.length === 0) current.state.global.notes = {}
-      current.log(`converted ${plural(converted, 'JSON file')} to Markdown`)
-    }
 
-    const loaded = Promise.all([convert(mod), startDelivery(mod)]).then(() => load(mod))
+    const loaded = startDelivery(mod).then(() => load(mod))
     fs.onChange({ path: store.changed }, () => load(mod))
     mod.every(rereadMs, () => Promise.all([load(mod), learnSenders(mod)]))
     sessions.current.onSessionStart(() => loadAll(mod))
     for (const job of inboxTools(loaded, filed)) mod.use(job)
-    const web = mod.use(program({ command: ['inbox', 'serve', '--data', mod.dataFolder], singleInstance: true }))
+    const web = mod.use(program({ command: ['inbox', 'serve', '--data', mod.dataFolder], isService: true }))
 
     mod.widgets.add(waitingWidget(open))
     mod.hotkeys.toggle.onPress(() => toggle(mod))

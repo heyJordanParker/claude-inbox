@@ -232,13 +232,21 @@ const project = {
   description: 'The repository the item is about, as an absolute path, when it is not the folder this session started in. Every path in a drawing is relative to it.',
 } as const
 
+const delivers = {
+  type: 'array',
+  items: id,
+  uniqueItems: true,
+  description:
+    'The ids of the items this report finishes: the proposal, choice, or question whose work it ships, and each earlier report it replaces. They leave the user\'s list with this report. Never an item the user rejected or is waiting on your changes to.',
+} as const
+
 const filed = <Schema extends { readonly properties: object }>(schema: Schema) => ({ ...schema, properties: { project, ...schema.properties }, $defs: defs })
 
 export const schemas = {
   propose: filed(proposalSchema),
   propose_options: filed(optionsSchema),
   ask_question: filed(defs.question),
-  report: filed(reportSchema),
+  report: filed({ ...reportSchema, properties: { ...reportSchema.properties, delivers } }),
   revise: {
     type: 'object',
     $defs: defs,

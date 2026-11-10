@@ -1,5 +1,5 @@
 import type { Mod } from '../node_modules/@cmodjs/core/mod.js'
-import { find, rememberPerson, scoped, storeOf } from './actions.js'
+import { deliveriesIn, find, rememberPerson, scoped, storeOf, widenTo } from './actions.js'
 import * as core from './items/answers.js'
 import { unfollowedWarning } from './items/heard.js'
 import { isFollowed, revisionOf, shownOf, type Item, type Note, type Person } from './items/item.js'
@@ -52,12 +52,17 @@ export async function markRead(mod: Mod<InboxState>, item: Item): Promise<void> 
 }
 
 export async function view(mod: Mod<InboxState>, id: string, onScreen: boolean): Promise<void> {
-  const left = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, mod.state.session.viewing)
+  const left = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, deliveriesIn(mod), mod.state.session.viewing)
   mod.state.session.viewing = id
   if (left === undefined || left.id === id) return
   setEditing(mod, null)
   forgetTyped(mod, answerInputKey(left.id))
   if (onScreen) await markRead(mod, left)
+}
+
+export async function follow(mod: Mod<InboxState>, id: string): Promise<void> {
+  widenTo(mod, id)
+  await view(mod, id, true)
 }
 
 export async function skip(mod: Mod<InboxState>, item: Item, seen: number, next: string): Promise<void> {
@@ -81,7 +86,7 @@ export function setEditing(mod: Mod<InboxState>, key: string | null): void {
 
 export function isWriting(mod: Mod<InboxState>): boolean {
   const { editing, typed, viewing } = mod.state.session
-  const shown = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, viewing)
+  const shown = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, deliveriesIn(mod), viewing)
   return editing !== null || (shown !== undefined && (typed[answerInputKey(shown.id)] ?? '') !== '')
 }
 

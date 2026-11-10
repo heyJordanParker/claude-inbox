@@ -1,11 +1,11 @@
 import type { RenderElement } from 'claude-code'
 import type { Mod, Page, PageInit } from '../../node_modules/@cmodjs/core/mod.js'
 import { Box, Button, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
-import { personIn, scoped, senderIn } from '../actions.js'
+import { deliveriesIn, personIn, scoped, senderIn } from '../actions.js'
 import { view } from '../answers.js'
 import { chip } from '../components/chip.js'
 import { ItemView, sender } from '../components/item.js'
-import { ago, archive, cardStatusOf, cardTime, current, emptyLine, kindName, nextAfter, positionLine, queue, scopeNames, scopes, shownOf, wording, type Item } from '../items/item.js'
+import { ago, archive, cardStatusOf, cardTime, current, emptyLine, kindName, nextAfter, positionLine, queue, scopeNames, scopes, shownOf, threadLine, wording, type Item } from '../items/item.js'
 import type { InboxState } from '../state.js'
 
 function Scopes({ mod }: { readonly mod: Mod<InboxState> }): RenderElement {
@@ -14,7 +14,7 @@ function Scopes({ mod }: { readonly mod: Mod<InboxState> }): RenderElement {
       {scopes.map((scope) => (
         <Box key={`scope-area:${scope}`}>
           <Button plain key={`scope:${scope}`} hover={{ inverse: true }} onPress={() => void (mod.state.session.scope = scope)}>
-            {chip(`${scopeNames[scope]} ${queue(scoped(mod, scope), mod.state.memory.person, mod.state.memory.senders).length}`, scope === mod.state.session.scope ? 'selected' : 'folded')}
+            {chip(`${scopeNames[scope]} ${queue(scoped(mod, scope), mod.state.memory.person, mod.state.memory.senders, deliveriesIn(mod)).length}`, scope === mod.state.session.scope ? 'selected' : 'folded')}
           </Button>
         </Box>
       ))}
@@ -24,7 +24,9 @@ function Scopes({ mod }: { readonly mod: Mod<InboxState> }): RenderElement {
 
 function ItemCard({ mod, item, isArchived, now }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly isArchived: boolean; readonly now: number }): RenderElement {
   const person = personIn(mod, item)
-  const status = cardStatusOf(item, person, mod.state.memory.senders)
+  const deliveries = deliveriesIn(mod)
+  const status = cardStatusOf(item, person, mod.state.memory.senders, deliveries)
+  const thread = threadLine(item)
   const open = () => void view(mod, item.id, true)
   return (
     <Box key={`card:${item.id}`} flexDirection="column" width="100%" paddingX={1} borderStyle="round" borderColor="inactive" borderDimColor={isArchived} hover={{ borderColor: 'suggestion' }} {...(isArchived ? {} : { backgroundColor: 'subtle' })}>
@@ -33,7 +35,7 @@ function ItemCard({ mod, item, isArchived, now }: { readonly mod: Mod<InboxState
         {status === undefined ? null : <Text> {chip(status.word, status.tone)}</Text>}
         <Text dimColor> from </Text>
         {sender(senderIn(mod, item, item.origin))}
-        <Text dimColor>{` · ${ago(cardTime(item, person), now)}`}</Text>
+        <Text dimColor>{` · ${ago(cardTime(item, person, deliveries), now)}${thread === undefined ? '' : ` · ${thread}`}`}</Text>
       </Button>
       <Button plain key={`view-title:${item.id}`} hover={{ inverse: true }} onPress={open}>
         <Text bold={!isArchived} dimColor={isArchived} wrap="truncate-end">
@@ -60,7 +62,7 @@ function Archive({ mod, items }: { readonly mod: Mod<InboxState>; readonly items
   const isOpen = mod.state.session.isArchiveOpen
   return (
     <Box flexDirection="column" gap={1}>
-      <Box paddingLeft={2}>
+      <Box key="archive-area" paddingLeft={2}>
         <Button plain key="archive" hover={{ inverse: true }} onPress={() => void (mod.state.session.isArchiveOpen = !isOpen)}>
           <Text dimColor>{`${isOpen ? '▾' : '▸'} ${wording.archive} ${items.length}`}</Text>
         </Button>
@@ -84,18 +86,19 @@ type OpenInBrowser = (mod: Mod<InboxState>, id: string) => Promise<void>
 
 function Shown({ mod, items, columns, onFile, onBrowser, focus }: { readonly mod: Mod<InboxState>; readonly items: readonly Item[]; readonly columns: number; readonly onFile: (mod: Mod<InboxState>, project: string, path: string, diff: string | undefined) => Promise<void>; readonly onBrowser: OpenInBrowser; readonly focus: Page['focus'] }): RenderElement {
   const { person, senders } = mod.state.memory
-  const listed = queue(items, person, senders)
-  const shown = shownOf(items, person, senders, mod.state.session.viewing)
+  const deliveries = deliveriesIn(mod)
+  const listed = queue(items, person, senders, deliveries)
+  const shown = shownOf(items, person, senders, deliveries, mod.state.session.viewing)
   const folded = (each: readonly Item[]) => each.filter((item) => item.id !== shown?.id)
   return (
     <Box flexDirection="column" gap={2}>
       {shown === undefined ? (
         <Empty mod={mod} />
       ) : (
-        <ItemView mod={mod} item={shown} place={positionLine(listed, shown, personIn(mod, shown), Date.now())} columns={columns} onFile={(path, diff) => onFile(mod, shown.project, path, diff)} onBrowser={() => onBrowser(mod, shown.id)} focus={focus} next={nextAfter(listed, shown)} />
+        <ItemView mod={mod} item={shown} place={positionLine(listed, shown, personIn(mod, shown), deliveries, Date.now())} columns={columns} onFile={(path, diff) => onFile(mod, shown.project, path, diff)} onBrowser={() => onBrowser(mod, shown.id)} focus={focus} next={nextAfter(listed, shown)} />
       )}
       <Cards mod={mod} items={folded(listed)} isArchived={false} />
-      <Archive mod={mod} items={folded(archive(items, person, senders))} />
+      <Archive mod={mod} items={folded(archive(items, person, senders, deliveries))} />
     </Box>
   )
 }

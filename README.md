@@ -87,6 +87,10 @@ Under the item, the page lists the rest as cards, like an email inbox. The list 
 
 Under the list, the **Archive** folds under one line with its count, and opens when you press it. It holds every item you answered or an agent withdrew, marked approved, rejected, picked, answered, done, or withdrawn. It also holds every open item that no running session follows, because its sessions closed or stopped following it, marked **agent closed**. Nothing is ever deleted. An archived item still opens, and an open one still takes your answer, which reaches its session when the session resumes. An item moves back to the list as soon as its session runs again.
 
+## One row for each piece of work
+
+A report names the items its work finishes: the proposal, choice, or question it ships, and each earlier report on the same work. Those items leave your list with the report and wait in the Archive marked **delivered**, so the list shows one row for the work, the newest report. The report's row says how many items it delivers. The report lists each one under **Delivers**, and each delivered item names its report under **Delivered by**, each a press away. An answer you already gave stays the item's mark, and an item you rejected or are waiting on changes to can't be delivered, so your open decisions stay in the list.
+
 The page shows this session's items: the ones it filed or follows. The chips at the top widen it to this project, which counts every worktree of the repository, or to every project, and each chip counts the items in its list, not its Archive. Only the session that files an item opens the page on it.
 
 The actions follow the review and inbox tools you already use. **Approve**, **Reject**, and **Request changes** work as in a GitHub pull request review, and your notes go out with each. **Done** closes a report, and a report has no Reject. **Next →** puts the item behind the rest, marked read, and opens the next one. After Request changes the item stays on the page with what you sent, so you can add more while the agent revises, and the agent's revision ends the wait on its own.
@@ -95,7 +99,7 @@ The actions follow the review and inbox tools you already use. **Approve**, **Re
 
 **Open in browser**, or `o`, in an item's header opens that item in your browser, with the same scope as the page. The browser shows the same items, notes, read marks, folds, and actions, with the same keys, plus room for wide diagrams and long diffs. A note or answer you give in one view shows in the other, and an item an agent files appears in the open tab without a reload.
 
-One `inbox` program serves the browser for every session on the computer, at `http://127.0.0.1:<port>`. It answers only this computer, and only a tab you opened from the terminal. Each press of Open in browser hands the tab a code that works once, for 60 seconds, and the tab trades it for the key the program keeps in `~/.local/share/cmod/data/inbox/server.json`. A tab you opened before keeps its key and skips the trade. When the session running the program closes, another open session starts it again on the same port, and the tab shows "Reconnecting to the inbox…" until it is back.
+One `inbox` program serves the browser for the whole computer, at `http://127.0.0.1:<port>`. It runs whenever you are logged in, as a service of the computer, so the browser view works with no Claude Code open. It answers only this computer, and only a tab you opened from the terminal. Each press of Open in browser hands the tab a code that works once, for 60 seconds, and the tab trades it for the key the program keeps in `~/.local/share/cmod/data/inbox/server.json`. A tab you opened before keeps its key and skips the trade. When the program restarts on a new version, the tab shows "Reconnecting to the inbox…" until it is back.
 
 Your items and answers stay in `~/.local/share/cmod/data/inbox/`, the same files the terminal reads, so both views always agree.
 
@@ -106,7 +110,7 @@ Your items and answers stay in `~/.local/share/cmod/data/inbox/`, the same files
 | `propose` | Files a proposal |
 | `propose_options` | Files a choice between two or more Solutions |
 | `ask_question` | Files one product or Capability question |
-| `report` | Files finished work: each change with short evidence, and the Problems left open |
+| `report` | Files finished work: each change with short evidence, the Problems left open, and the items it delivers |
 | `revise` | Replaces an item with a new revision, from any session, and subscribes that session |
 | `withdraw` | Takes an item out of the inbox |
 | `subscribe`, `unsubscribe` | Starts or stops hearing an item's changes in this session |
@@ -116,7 +120,7 @@ Claude sees each as `mcp__inbox__<tool>`. A project adds its own checks as ordin
 
 ## Install
 
-The inbox is a [Claude Mod Manager](https://claudemodmanager.com) mod. It needs `trace` on the machine.
+The inbox is a [Claude Mod Manager](https://claudemodmanager.com) mod. It needs `trace` on the machine. A computer on inbox 0.2.0 or older updates through 0.3.0 first, which moves its items to Markdown files.
 
 ```bash
 cmod install heyJordanParker/claude-inbox

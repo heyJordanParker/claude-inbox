@@ -6,4 +6,6 @@ Each tool answers with a link to the item. Put that link in your reply, so the u
 
 The user's answer arrives in this session as a prompt from the inbox. Act on what it names, and nothing more. After a correction, call `revise` with the whole item, and the item stays open for the user. To resubmit a rejected item, call `revise` too, which reopens it with its history. Never file it again as a new item.
 
+A report names in `delivers` the proposal, choice, or question whose work it ships, and each earlier report it replaces, so they leave the user's list with it.
+
 The same inbox answer can arrive twice after a reload. Act on each answer number once.

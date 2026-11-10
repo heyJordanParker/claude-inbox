@@ -2,11 +2,11 @@ import type { RenderChildren, RenderElement } from 'claude-code'
 import type { Mod, Page } from '../../node_modules/@cmodjs/core/mod.js'
 import { Box, Button, Input, Markdown, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
 import { Tooltip } from '../../node_modules/@cmodjs/core/ui/components.js'
-import { personIn, senderIn } from '../actions.js'
-import { answer, answerInputKey, dropNote, noteInputKey, setEditing, setNote, setTyped, skip } from '../answers.js'
+import { deliveriesIn, personIn, senderIn } from '../actions.js'
+import { answer, answerInputKey, dropNote, follow, noteInputKey, setEditing, setNote, setTyped, skip } from '../answers.js'
 import { actionsOf, type Action } from '../items/answers.js'
 import { kindOf } from '../items/drawings.js'
-import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, noteOn, notePlaceholder, plural, precedentLine, revisionOf, sentCorrections, unseenOf, wording, type Drawing, type Idea, type Item, type Person, type Sender, type Unseen } from '../items/item.js'
+import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, noteOn, notePlaceholder, plural, precedentLine, revisionOf, sentCorrections, threadOf, threadStatusOf, unseenOf, wording, type Drawing, type Idea, type Item, type Person, type Sender, type Unseen } from '../items/item.js'
 import { childrenOf, drawingPath, evidenceOf, evidencePath, foldedLine, foldKey, folds, headingOf, ideaPath, ideasOf, isDrawingUnchanged, isLeftOpen, isUnfolded, readingOf, rootGroups, summaryOf, titleOf, unseenAt, withRemoved, type Node, type Part, type Reading } from '../items/tree.js'
 import type { InboxState } from '../state.js'
 import { chip } from './chip.js'
@@ -423,6 +423,42 @@ function Closing({ mod, item, person }: { readonly mod: Mod<InboxState>; readonl
   )
 }
 
+function ThreadLink({ mod, from, to }: { readonly mod: Mod<InboxState>; readonly from: Item; readonly to: Item }): RenderElement {
+  const status = threadStatusOf(to, personIn(mod, to), mod.state.memory.senders, deliveriesIn(mod))
+  return (
+    <Box key={`thread-area:${from.id}:${to.id}`}>
+      <Button plain key={`thread:${from.id}:${to.id}`} hover={{ inverse: true }} onPress={() => follow(mod, to.id)}>
+        <Text dimColor>{`${kindName(to)} · `}</Text>
+        <Text color="suggestion" wrap="wrap">
+          {current(to).title}
+        </Text>
+        {status === undefined ? null : <Text dimColor>{` · ${status.word}`}</Text>}
+      </Button>
+    </Box>
+  )
+}
+
+function Thread({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: Item }): RenderElement | null {
+  const { deliveredBy, delivers } = threadOf(item, mod.state.memory.items, deliveriesIn(mod))
+  if (deliveredBy === undefined && delivers.length === 0) return null
+  return (
+    <Box flexDirection="column" gap={partSpace}>
+      {deliveredBy === undefined ? null : (
+        <Section label={wording.deliveredBy}>
+          <ThreadLink mod={mod} from={item} to={deliveredBy} />
+        </Section>
+      )}
+      {delivers.length === 0 ? null : (
+        <Section label={wording.delivers}>
+          {delivers.map((each) => (
+            <ThreadLink mod={mod} from={item} to={each} />
+          ))}
+        </Section>
+      )}
+    </Box>
+  )
+}
+
 function EarlierNotes({ mod, item, person }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person }): RenderElement | null {
   const earlier = earlierNotes(item, person)
   if (earlier.length === 0) return null
@@ -535,7 +571,8 @@ export function ItemView({ mod, item, place, columns, onFile, onBrowser, focus, 
       <Box flexDirection="column" paddingX={2} paddingY={1}>
         <Box flexDirection="column" gap={partSpace}>
           <Closing mod={mod} item={item} person={person} />
-        <Sent item={item} person={person} />
+          <Thread mod={mod} item={item} />
+          <Sent item={item} person={person} />
           <EarlierNotes mod={mod} item={item} person={person} />
           <Lead shared={shared} />
         </Box>

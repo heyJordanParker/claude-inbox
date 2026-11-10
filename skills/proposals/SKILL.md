@@ -121,6 +121,17 @@ Never: file a rejected item again as a new item.
 
 A report is final, and `revise` refuses one. When the user requests changes to a report, fix them, then file a new report that holds only that round's changes.
 
-## 9. An answer is not a rule
+## 9. Deliver what the report finishes
+
+A report gives in `delivers` the id of each item its work finishes: the proposal, choice, or question it ships, and each earlier report on the same work that it replaces. Those items leave the user's list with the report and wait in the Archive marked delivered, so the user's list shows one row for the work. `read` lists what is still open. The inbox refuses an item the user rejected or is waiting on your changes to, because that decision is still the user's.
+
+Example: the second round of work on an approved proposal.
+  ```json
+  { "title": "Matches ship without defaults, and nested matches too",
+    "delivers": ["exhaustive-match-needs-no-default", "matches-ship-without-defaults"] }
+  ```
+Never: a report that leaves the proposal it shipped open in the user's list.
+
+## 10. An answer is not a rule
 
 An answer is the user's call about that revision, with what it said in front of them. When a later Problem shows an earlier answer may be wrong, put a new item in the inbox on its merits.
