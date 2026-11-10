@@ -13,6 +13,10 @@ What changed in each version of inbox, for the people who use it. cmod publish r
 - The inbox needs cmod 5.10.0 or newer.
 - Items stored as JSON by inbox 0.2.0 or older no longer convert. Update through 0.3.0 first.
 
+### Fixed
+- The Inbox page no longer blanks the whole Sidebar in Claude Code 2.1.318 when the Archive line shows.
+- Claude Code no longer stops the inbox's hooks when a session starts slowly. The inbox waits at most 5 s for its start, inside the 10 s Claude Code gives a hook.
+
 ## [0.3.0]
 
 ### Added

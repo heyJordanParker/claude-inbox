@@ -62,7 +62,7 @@ function Archive({ mod, items }: { readonly mod: Mod<InboxState>; readonly items
   const isOpen = mod.state.session.isArchiveOpen
   return (
     <Box flexDirection="column" gap={1}>
-      <Box paddingLeft={2}>
+      <Box key="archive-area" paddingLeft={2}>
         <Button plain key="archive" hover={{ inverse: true }} onPress={() => void (mod.state.session.isArchiveOpen = !isOpen)}>
           <Text dimColor>{`${isOpen ? '▾' : '▸'} ${wording.archive} ${items.length}`}</Text>
         </Button>

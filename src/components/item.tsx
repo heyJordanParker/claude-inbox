@@ -426,13 +426,15 @@ function Closing({ mod, item, person }: { readonly mod: Mod<InboxState>; readonl
 function ThreadLink({ mod, from, to }: { readonly mod: Mod<InboxState>; readonly from: Item; readonly to: Item }): RenderElement {
   const status = threadStatusOf(to, personIn(mod, to), mod.state.memory.senders, deliveriesIn(mod))
   return (
-    <Button plain key={`thread:${from.id}:${to.id}`} hover={{ inverse: true }} onPress={() => follow(mod, to.id)}>
-      <Text dimColor>{`${kindName(to)} · `}</Text>
-      <Text color="suggestion" wrap="wrap">
-        {current(to).title}
-      </Text>
-      {status === undefined ? null : <Text dimColor>{` · ${status.word}`}</Text>}
-    </Button>
+    <Box key={`thread-area:${from.id}:${to.id}`}>
+      <Button plain key={`thread:${from.id}:${to.id}`} hover={{ inverse: true }} onPress={() => follow(mod, to.id)}>
+        <Text dimColor>{`${kindName(to)} · `}</Text>
+        <Text color="suggestion" wrap="wrap">
+          {current(to).title}
+        </Text>
+        {status === undefined ? null : <Text dimColor>{` · ${status.word}`}</Text>}
+      </Button>
+    </Box>
   )
 }
 
