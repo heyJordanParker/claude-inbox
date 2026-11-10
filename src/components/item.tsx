@@ -37,10 +37,6 @@ async function toggleNote(shared: Shared, key: string): Promise<void> {
   if (opened !== null) await shared.focus(noteInputKey(opened))
 }
 
-function Typed({ text }: { readonly text: string | undefined }): RenderElement | null {
-  return text === undefined || text === '' ? null : <Text wrap="wrap">{text}</Text>
-}
-
 function NoteReveal({ shared, noteKey, right = 0 }: { readonly shared: Shared; readonly noteKey: string; readonly right?: number }): RenderElement {
   return (
     <Box position="absolute" right={right} top={0} display="none" hover={{ display: 'flex' }}>
@@ -60,14 +56,12 @@ function Note({ shared, path, label = wording.note }: { readonly shared: Shared;
     return (
       <Box flexDirection="column">
         <Text bold>{label}</Text>
-        <Typed text={mod.state.session.typed[inputKey] ?? note?.words} />
         <Input
           key={inputKey}
           placeholder={notePlaceholder(label)}
           submitLabel="save"
           rows={4}
           {...(note === undefined ? {} : { value: note.words })}
-          onInput={(words) => setTyped(mod, inputKey, words)}
           onSubmit={async (words) => {
             if (await setNote(mod, item, path, words)) setEditing(mod, null)
           }}
@@ -509,7 +503,6 @@ function Actions({ shared, next }: { readonly shared: Shared; readonly next: Ite
             setEditing(mod, answerKey)
             return shared.focus(answerInput)
           })}
-          <Typed text={mod.state.session.typed[answerInput]} />
           <Input key={answerInput} placeholder={wording.answerPlaceholder} submitLabel="send" rows={4} onInput={(words) => setTyped(mod, answerInput, words)} onSubmit={(words) => answer(mod, item.id, seen, { kind: 'answer', words })} />
         </Box>
       )}

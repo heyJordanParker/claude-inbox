@@ -10,8 +10,8 @@
       "description": "One inbox for every proposal, choice, question, and report your Claude Code agents bring you, across every session. Agents fill typed fields, the inbox checks them against the code and draws the Architecture, and your answer goes back to every session that follows the item.",
       "source": {
         "source": "archive",
-        "url": "https://github.com/heyJordanParker/claude-inbox/releases/download/v0.3.0/inbox-0.3.0.zip",
-        "sha256": "2edbdd273ea144beb294d578c1bb653d496e00ffa4476dbdfbaee9d7544dd96d"
+        "url": "https://github.com/heyJordanParker/claude-inbox/releases/download/v0.4.0/inbox-0.4.0.zip",
+        "sha256": "d03b9478993166f2fe4988f7249e18a3dce4eb5169e751ad623079b2c0cc9813"
       }
     },
     {

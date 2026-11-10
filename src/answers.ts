@@ -79,9 +79,7 @@ export function answerInputKey(id: string): string {
 }
 
 export function setEditing(mod: Mod<InboxState>, key: string | null): void {
-  const closed = mod.state.session.editing
   mod.state.session.editing = key
-  if (closed !== null && closed !== key) forgetTyped(mod, noteInputKey(closed))
 }
 
 export function isWriting(mod: Mod<InboxState>): boolean {

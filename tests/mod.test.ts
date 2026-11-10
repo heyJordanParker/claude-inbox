@@ -464,30 +464,11 @@ test('a comment written in the footer is a note on the whole item, pressing it e
   expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user approved the proposal "Exhaustive match needs no default" (${item.id}), answer 1, with these notes:`, '- the whole item: "Ship it behind a flag first"', 'Apply them as you go.'].join('\n'))
 })
 
-test('a note being typed is kept in session state under its field key, and saving it clears it', async () => {
-  const mod = tested()
-  const item = await filed(mod, 'propose', proposal)
-  const field = `words:${item.id}:p0`
-  const words = 'Say who writes the default when a match covers each case, name the languages that already prove it, and show the checker refusing a match that misses one case, before the spec drops the rule for good.'
-  await mod.shown.page.press(`note:${item.id}:p0`)
-  await mod.shown.page.input(field, words, 'change')
-  expect(mod.state.session.typed).toEqual({ [field]: words })
-
-  await mod.shown.page.input(field, words)
-
-  expect(mod.state.session.typed).toEqual({})
-  expect(personAt(mod)?.notes.map((each) => each.words)).toEqual([words])
-})
-
-test('typed text goes when its field closes: a note closed unsaved, an answer when the page moves to another item or the answer is sent, and an answer stays while a comment opens', async () => {
+test('typed answer text goes when the page moves to another item or the answer is sent, and stays while a comment opens', async () => {
   const mod = tested()
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   const item = await filed(mod, 'propose', proposal)
   const answerField = `answer:${asked.id}`
-  await mod.shown.page.press(`note:${item.id}:p0`)
-  await mod.shown.page.input(`words:${item.id}:p0`, 'Say who writes the default', 'change')
-  await mod.shown.page.press(`note:${item.id}:p0`)
-  expect(mod.state.session.typed).toEqual({})
 
   await mod.shown.page.press(`view:${asked.id}`)
   await mod.shown.page.input(answerField, 'Yes, but only paid ones', 'change')
@@ -502,16 +483,18 @@ test('typed text goes when its field closes: a note closed unsaved, an answer wh
   expect(mod.state.session.typed).toEqual({})
 })
 
-test('a saved note opened again draws its whole words above the field, because the field shows one cut-off line, and words typed over it take their place', async () => {
+test('words draw only in their field: a saved note opened again once, and typed comment and answer words never as a copy above it', async () => {
   const mod = tested()
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   const drawn = async (words: string) => (await mod.shown.page.lines()).filter((line) => line.includes(words)).length
   await note(mod, asked, 'why', 'Name who waits on the answer')
   await mod.shown.page.press(`edit:${asked.id}:why`)
-  expect(await drawn('Name who waits on the answer')).toBe(2)
+  expect(await drawn('Name who waits on the answer')).toBe(1)
 
-  await mod.shown.page.input(`words:${asked.id}:why`, 'Name who waits', 'change')
-  expect([await drawn('Name who waits on the answer'), await drawn('Name who waits')]).toEqual([1, 2])
+  await mod.shown.page.press('comment')
+  await mod.shown.page.input(`words:${asked.id}:`, 'option 1 is better', 'change')
+  await mod.shown.page.input(`answer:${asked.id}`, 'Yes, but only paid ones', 'change')
+  expect([await drawn('option 1 is better'), await drawn('Yes, but only paid ones')]).toEqual([0, 0])
 })
 
 test('words typed into the Answer box without pressing a keep the page on its item when this session files another, and the words stay', async () => {
