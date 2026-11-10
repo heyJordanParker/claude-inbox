@@ -2,6 +2,11 @@
 
 What changed in each version of inbox, for the people who use it. cmod publish releases the section for the version, and the Updated toast and Settings show it.
 
+## [0.4.1]
+
+### Fixed
+- What you type in a Comment, a note, or the Answer box shows once, in its field, instead of a second time above it.
+
 ## [0.4.0]
 
 ### Added
