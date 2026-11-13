@@ -191,7 +191,7 @@ test('a filing whose Markdown rulebook refuses is not stored, and the agent gets
   const checked: (string | undefined)[] = []
   const mod = tested(async (stdin) => {
     checked.push(stdin)
-    return run({ stdout: JSON.stringify({ refuse: refused, failures: [], findings: [] }) })
+    return run({ exitCode: 1, stdout: `${refused}\n` })
   })
 
   const answer = await mod.callTool('ask_question', question)
@@ -199,30 +199,38 @@ test('a filing whose Markdown rulebook refuses is not stored, and the agent gets
   expect(answer).toEqual({ deny: `The ask_question tool failed: ${refused}` })
   expect(mod.state.memory.items).toEqual([])
   expect(await mod.fakes.fs.exists?.(`${itemsFolder}/do-we-want-courses.md`)).toBe(false)
-  expect(mod.calls.filter(({ call, args }) => call === 'process.run' && (args[0] as readonly string[])[0] === 'rulebook').map(({ args }) => [args[0], (args[1] as { readonly cwd?: string }).cwd])).toEqual([[['rulebook', 'text', '@inbox/do-we-want-courses.md'], '/test/plugins/inbox']])
+  expect(mod.calls.filter(({ call, args }) => call === 'process.run' && (args[0] as readonly string[])[0] === 'rulebook').map(({ args }) => [args[0], (args[1] as { readonly cwd?: string }).cwd])).toEqual([[['rulebook', 'check', '--stdin-file-path=@inbox/do-we-want-courses.md'], '/test/plugins/inbox']])
   expect(checked[0]).toContain('# Do we want courses?\n\nIt decides the schema — and the billing.\n')
 })
 
 test('a filing is stored when the rulebook command fails, and the answer says the check did not run and why', async () => {
-  const exited = tested(async () => run({ exitCode: 2, stderr: 'rulebook: rulebook text checks a message by its @-name: @reply.' }))
+  const exited = tested(async () => run({ exitCode: 2, stderr: 'rulebook: rulebook.config.ts could not load.\n' }))
   const missing = tested(async () => {
     throw new Error('rulebook: command not found')
   })
-  const noJson = tested(async () => run({ stdout: 'Checked.' }))
 
-  const answers = await Promise.all([exited, missing, noJson].map((mod) => mod.callTool('ask_question', question)))
+  const answers = await Promise.all([exited, missing].map((mod) => mod.callTool('ask_question', question)))
 
   expect(answers.map((answer) => ('result' in answer ? String(answer.result).split('\n\n').at(-1) : answer))).toEqual([
-    'rulebook did not check this item, because rulebook text @inbox/do-we-want-courses.md exited 2: rulebook: rulebook text checks a message by its @-name: @reply.',
-    'rulebook did not check this item, because rulebook text @inbox/do-we-want-courses.md did not run: rulebook: command not found',
-    'rulebook did not check this item, because rulebook text @inbox/do-we-want-courses.md answered no JSON: Checked.',
+    'rulebook did not check this item, because rulebook check --stdin-file-path=@inbox/do-we-want-courses.md exited 2: rulebook: rulebook.config.ts could not load.',
+    'rulebook did not check this item, because rulebook check --stdin-file-path=@inbox/do-we-want-courses.md did not run: rulebook: command not found',
   ])
-  for (const mod of [exited, missing, noJson]) expect(mod.state.memory.items.map((item: Item) => item.id)).toEqual(['do-we-want-courses'])
+  for (const mod of [exited, missing]) expect(mod.state.memory.items.map((item: Item) => item.id)).toEqual(['do-we-want-courses'])
   expect(await exited.fakes.fs.exists?.(`${itemsFolder}/do-we-want-courses.md`)).toBe(true)
 })
 
+test('a filing rulebook only warns about is stored, and the agent gets the warning word for word', async () => {
+  const warned = 'Question checked with 1 warning.\n\n  5  warning  global/plain-words  "leverage" has a plain word: use.\n     > It decides the schema and the billing.'
+  const mod = tested(async () => run({ stdout: `${warned}\n` }))
+
+  const answer = await mod.callTool('ask_question', question)
+
+  expect('result' in answer ? String(answer.result) : answer).toEndWith(`and shows it to the user. This session is subscribed, so the answer arrives here as a prompt. Give the user this link in your reply, which opens it in their Sidebar: [Do we want courses?](file://${itemsFolder}/do-we-want-courses.md)\n\n${warned}`)
+  expect(mod.state.memory.items.map((item: Item) => item.id)).toEqual(['do-we-want-courses'])
+})
+
 test('an agent files an idea that holds a fenced bash block with a # install line, and it reads back equal', async () => {
-  const mod = tested(async () => run({ stdout: JSON.stringify({ failures: [], findings: [] }) }))
+  const mod = tested(async () => run({}))
   const idea = 'Install the checker first:\n\n```bash\n# install\nbun add match-checker\n```'
   const filed = proposal('Enums ship without defaults', idea)
   const { kind: _, ...input } = filed
