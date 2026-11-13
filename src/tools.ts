@@ -22,31 +22,20 @@ function linkLine(mod: Mod<InboxState>, item: Item): string {
   return `Give the user this link in your reply, which opens it in their Sidebar: ${linkOf(mod, item)}`
 }
 
-type RulebookAnswer = { readonly refuse?: string; readonly note?: string; readonly failures?: readonly unknown[] }
-
 const rulebookMs = 20_000
 
 function rulebookCheck(mod: Mod<InboxState>, told: string[]): Check {
   return async (id, markdown) => {
-    const name = `@inbox/${id}.md`
+    const command = ['rulebook', 'check', `--stdin-file-path=@inbox/${id}.md`]
     const notRun = (why: string) => {
-      told.push(`rulebook did not check this item, because rulebook text ${name} ${why}`)
+      told.push(`rulebook did not check this item, because ${command.join(' ')} ${why}`)
     }
-    let answer: RulebookAnswer
-    try {
-      const { exitCode, stdout, stderr } = await process.run(['rulebook', 'text', name], { stdin: markdown, cwd: mod.folder, timeoutMs: rulebookMs })
-      if (exitCode !== 0) return notRun(`exited ${exitCode}: ${stderr.trim()}`)
-      try {
-        answer = JSON.parse(stdout) as RulebookAnswer
-      } catch {
-        return notRun(`answered no JSON: ${stdout.trim()}`)
-      }
-    } catch (error) {
-      return notRun(`did not run: ${messageOf(error)}`)
-    }
-    if (typeof answer.refuse === 'string') throw new Error(answer.refuse)
-    if (typeof answer.note === 'string') told.push(answer.note)
-    for (const failure of answer.failures ?? []) told.push(`rulebook could not run a rule: ${typeof failure === 'string' ? failure : JSON.stringify(failure)}`)
+    const ran = await process.run(command, { stdin: markdown, cwd: mod.folder, timeoutMs: rulebookMs }).catch((error: unknown) => messageOf(error))
+    if (typeof ran === 'string') return notRun(`did not run: ${ran}`)
+    const said = ran.stdout.trim()
+    if (ran.exitCode === 1) throw new Error(said)
+    if (ran.exitCode !== 0) return notRun(`exited ${ran.exitCode}: ${ran.stderr.trim()}`)
+    if (said !== '') told.push(said)
   }
 }
 

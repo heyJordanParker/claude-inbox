@@ -2,6 +2,11 @@
 
 What changed in each version of inbox, for the people who use it. cmod publish releases the section for the version, and the Updated toast and Settings show it.
 
+## [0.4.2]
+
+### Fixed
+- rulebook 0.5.0 checks every item an agent files again. Since rulebook 0.5.0 removed `rulebook text`, each item was stored unchecked.
+
 ## [0.4.1]
 
 ### Fixed
