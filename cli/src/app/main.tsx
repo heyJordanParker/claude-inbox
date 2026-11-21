@@ -2,15 +2,15 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { viewingAfterAnswer, type Given } from '../../../src/items/answers.js'
 import { unfollowedWarning } from '../../../src/items/heard.js'
-import { archive, deliveriesOf, isInScope, narrowestScope, nextAfter, personOf, positionLine, queue, revisionOf, scopes, shownOf, threadOf, threadStatusOf, unseenOf, type Item, type Note, type Person, type PersonFiles, type Scope, type Senders } from '../../../src/items/item.js'
+import { archive, deliveriesOf, isInScope, narrowestScope, nextAfter, ofKind, personOf, positionLine, queue, revisionOf, scopes, shownOf, threadOf, threadStatusOf, unseenOf, type Item, type Kind, type Note, type Person, type PersonFiles, type Scope, type Senders, type Summary } from '../../../src/items/item.js'
 import type { Folds } from '../../../src/items/tree.js'
-import { api, follow, NoAnswer, Refused, signIn, type ChangedEvent, type Connection, type Following } from './api.js'
+import { api, follow, NoAnswer, Refused, type ChangedEvent, type Connection, type Following } from './api.js'
 import { FileView, type ShownFile } from './drawing.js'
 import { ItemView, type ItemActions } from './item.js'
-import { Empty, List } from './list.js'
+import { Empty, List, type Selection } from './list.js'
 import './styles.css'
 
-type Data = { readonly items: readonly Item[]; readonly person: PersonFiles; readonly repositories: Readonly<Record<string, string>>; readonly senders: Senders }
+type Data = { readonly items: readonly Summary[]; readonly person: PersonFiles; readonly repositories: Readonly<Record<string, string>>; readonly senders: Senders }
 
 type Notice = { readonly id: number; readonly tone: 'warning' | 'error'; readonly message: string; readonly description?: string }
 
@@ -50,10 +50,11 @@ function applied(data: Data, changed: ChangedEvent): Data {
 
 function App(): ReactNode {
   const [data, setData] = useState<Data | undefined>(undefined)
-  const [signedOut, setSignedOut] = useState<string | undefined>(undefined)
   const [connection, setConnection] = useState<Connection>('connected')
   const [viewing, setViewing] = useState<string | null>(viewedInPath)
   const [scope, setScope] = useState<Scope>(offered[0] ?? 'all')
+  const [kind, setKind] = useState<Kind | null>(null)
+  const [selected, setSelected] = useState<readonly string[]>([])
   const [file, setFile] = useState<ShownFile | null>(null)
   const [editing, setEditing] = useState<string | null>(null)
   const [folds, setFolds] = useState<Folds>(storedFolds)
@@ -69,35 +70,24 @@ function App(): ReactNode {
   }, [])
 
   useEffect(() => {
-    let following: Following | undefined
-    let isStopped = false
     const heard = (ids: readonly string[]) => {
       for (const id of ids) streamed.current.set(id, (streamed.current.get(id) ?? 0) + 1)
     }
-    signIn(setConnection)
-      .then(() => {
-        if (isStopped) return
-        following = follow(project, {
-          onListed: (listed) => {
-            if (listed.build !== build) return location.reload()
-            heard(Object.keys(listed.person))
-            setData(listed)
-          },
-          onChanged: (changed) => {
-            heard([...Object.keys(changed.person), ...changed.gone.person])
-            setData((known) => (known === undefined ? known : applied(known, changed)))
-            const known = latest.current?.repositories ?? {}
-            if (changed.items.some((item) => known[item.project] === undefined)) following?.resync()
-          },
-          onConnection: setConnection,
-          onSignedOut: setSignedOut,
-        })
-      })
-      .catch((error: unknown) => setSignedOut(error instanceof Error ? error.message : String(error)))
-    return () => {
-      isStopped = true
-      following?.stop()
-    }
+    const following: Following = follow(project, {
+      onListed: (listed) => {
+        if (listed.build !== build) return location.reload()
+        heard(Object.keys(listed.person))
+        setData(listed)
+      },
+      onChanged: (changed) => {
+        heard([...Object.keys(changed.person), ...changed.gone.person])
+        setData((known) => (known === undefined ? known : applied(known, changed)))
+        const known = latest.current?.repositories ?? {}
+        if (changed.items.some((item) => known[item.project] === undefined)) following.resync()
+      },
+      onConnection: setConnection,
+    })
+    return following.stop
   }, [])
 
 
@@ -109,14 +99,30 @@ function App(): ReactNode {
   const widest = viewing === null ? scope : narrowestScope(offered, scope, viewing, scopedTo)
   const items = scopedTo(widest)
   const deliveries = deliveriesOf(data?.items ?? [])
-  const listed = queue(items, person, senders, deliveries)
-  const shown = shownOf(items, person, senders, deliveries, viewing)
+  const everyListed = queue(items, person, senders, deliveries)
+  const listed = ofKind(everyListed, kind)
+  const chosen = listed.filter((item) => selected.includes(item.id))
+  const shown = items.find((item) => item.id === viewing) ?? shownOf(ofKind(items, kind), person, senders, deliveries, null)
   const next = shown === undefined ? undefined : nextAfter(listed, shown)
-  const latestShown = useRef<Item | undefined>(undefined)
+  const latestShown = useRef<Summary | undefined>(undefined)
   latestShown.current = shown
   const itemPane = useRef<HTMLElement>(null)
   const shownBefore = useRef<string | undefined>(undefined)
   const shownId = shown?.id
+  const [opened, setOpened] = useState<Item | undefined>(undefined)
+  const openedShown = opened?.id === shownId ? opened : undefined
+
+  useEffect(() => {
+    if (shownId === undefined) return
+    let isCurrent = true
+    api
+      .item(shownId)
+      .then((item) => isCurrent && setOpened(item))
+      .catch((error: unknown) => isCurrent && failed(error))
+    return () => {
+      isCurrent = false
+    }
+  }, [shownId, shown?.updatedAt])
 
   useEffect(() => {
     if (shownId === undefined) return
@@ -142,7 +148,7 @@ function App(): ReactNode {
   }, [])
 
   const markRead = useCallback(
-    (item: Item, keepalive = false) => {
+    (item: Summary, keepalive = false) => {
       const known = latest.current
       if (known === undefined || unseenOf(item, personOf(known.person, item)) === undefined) return
       const remember = replied(item.id)
@@ -197,30 +203,22 @@ function App(): ReactNode {
     return false
   }
 
-  const actionsFor = (item: Item): ItemActions => ({
+  const actionsFor = (item: Summary): ItemActions => ({
     answer: (given: Given) => {
       const remember = replied(item.id)
       return api
         .answer(item.id, revisionOf(item), given)
-        .then(({ person: fresh, isFollowed }) => {
+        .then(({ person: fresh, isUnheard }) => {
           remember(fresh)
           setEditing(null)
           setViewing((now) => viewingAfterAnswer(given, item.id, now))
-          if (!isFollowed) notify({ tone: 'warning', ...unfollowedWarning(item) })
+          if (isUnheard) notify({ tone: 'warning', ...unfollowedWarning(item) })
           return true
         })
         .catch(failed)
     },
-    skip: async () => {
-      if (next === undefined) return
-      const remember = replied(item.id)
-      await api
-        .skip(item.id, revisionOf(item))
-        .then(({ person: fresh }) => {
-          remember(fresh)
-          view(next.id, false)
-        })
-        .catch(failed)
+    next: () => {
+      if (next !== undefined) view(next.id)
     },
     setNote: (path: string, words: string) => {
       const remember = replied(item.id)
@@ -251,12 +249,31 @@ function App(): ReactNode {
       }),
   })
 
-  const banner = signedOut ?? (connection === 'reconnecting' ? 'Reconnecting to the inbox…' : connection === 'moved' ? 'The inbox moved. Open it again from the terminal.' : undefined)
+  const eachChosen = (picked: readonly Summary[], change: (item: Summary) => Promise<{ readonly person: Person }>) => {
+    setSelected([])
+    for (const item of picked) {
+      const remember = replied(item.id)
+      change(item)
+        .then(({ person: fresh }) => remember(fresh))
+        .catch(failed)
+    }
+  }
+
+  const selection: Selection = {
+    chosen,
+    toggle: (id) => setSelected(chosen.some((item) => item.id === id) ? chosen.filter((item) => item.id !== id).map((item) => item.id) : [...chosen.map((item) => item.id), id]),
+    selectAll: () => setSelected(listed.map((item) => item.id)),
+    clear: () => setSelected([]),
+    done: () => eachChosen(chosen.filter((item) => item.kind === 'report'), (item) => api.answer(item.id, revisionOf(item), { kind: 'acknowledge' })),
+    markRead: () => eachChosen(chosen, (item) => api.read(item.id, revisionOf(item))),
+  }
+
+  const banner = connection === 'reconnecting' ? 'Reconnecting to the inbox…' : connection === 'moved' ? 'The inbox moved. Open it again from the terminal.' : undefined
 
   return (
     <div className="app">
       {banner === undefined ? null : (
-        <p className="app__banner banner" role="status" data-tone={signedOut === undefined && connection === 'reconnecting' ? 'warning' : 'error'}>
+        <p className="app__banner banner" role="status" data-tone={connection === 'reconnecting' ? 'warning' : 'error'}>
           {banner}
         </p>
       )}
@@ -268,27 +285,38 @@ function App(): ReactNode {
           onScope={(each) => {
             setScope(each)
             setViewing(null)
+            setSelected([])
           }}
+          kind={kind}
+          everyListed={everyListed}
+          onKind={(each) => {
+            setKind(each)
+            setSelected([])
+          }}
+          selection={selection}
           listed={listed}
-          archived={archive(items, person, senders, deliveries)}
+          archived={ofKind(archive(items, person, senders, deliveries), kind)}
           person={person}
           senders={senders}
           deliveries={deliveries}
           shownId={shown?.id}
           onView={(id) => view(id)}
+          onDone={(item) => void actionsFor(item).answer({ kind: 'acknowledge' })}
         />
       </div>
       <main ref={itemPane} className="app__item">
         {data === undefined ? (
-          <p className="part__aside">{signedOut === undefined ? 'Reading the inbox…' : ''}</p>
+          <p className="part__aside">Reading the inbox…</p>
         ) : file !== null ? (
           <FileView file={file} read={api.file} onClose={() => setFile(null)} />
         ) : shown === undefined ? (
           <Empty scope={widest} />
+        ) : openedShown === undefined ? (
+          <p className="part__aside">Reading the item…</p>
         ) : (
           <ItemView
             key={shown.id}
-            item={shown}
+            item={openedShown}
             person={personOf(person, shown)}
             senders={data.senders}
             thread={threadOf(shown, data.items, deliveries)}
@@ -299,7 +327,7 @@ function App(): ReactNode {
             folds={folds}
             editing={editing}
             setEditing={setEditing}
-            actions={actionsFor(shown)}
+            actions={actionsFor(openedShown)}
             onFile={(path, diff) => setFile({ id: shown.id, project: shown.project, path, diff })}
           />
         )}

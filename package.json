@@ -14,7 +14,7 @@
     }
   },
   "dependencies": {
-    "@cmodjs/core": "^5.13.1",
+    "@cmodjs/core": "^8.2.0",
     "beautiful-mermaid": "1.1.3"
   }
 }

@@ -2,6 +2,23 @@
 
 What changed in each version of inbox, for the people who use it. cmod publish releases the section for the version, and the Updated toast and Settings show it.
 
+## [0.5.0]
+
+### Added
+- The Inbox page opens on a list of rows, newest first, like a mail inbox. A dot and a bold title mark what you haven't read, and a proposal, choice, or question shows its kind in the accent color, since an agent waits on it, while a report's kind is dim. Pressing a row opens the item, and `u` goes back to the list.
+- Tabs filter the list by kind: All, Proposals, Options, Questions, and Reports, each with its count. The scope moves into a menu above them.
+- Each row has a checkbox, and Select all checks every row the tab lists. Done, `e`, closes the reports among the checked rows, and Mark read, `i`, marks them all read. Pointing at a report's row shows Done where its time was. The browser view has the same tabs, checkboxes, and actions.
+- Open in browser, `o`, on the list opens the whole inbox in your browser, not only one item.
+
+### Changed
+- The browser inbox is a plain address you can bookmark, with no sign-in code, and it works through `tailscale serve` on your other devices.
+- The browser inbox opens at once. It lists each item by its title, about 145 KB for 159 items, and reads an item whole when you open it. Before, it sent every item with every revision and diff, 3 MB, and often sat on "Reading the inbox…" for up to 30 seconds.
+- A plain Done on a report no longer sends the agent a message, since a report is final and the agent waits on nothing. Done with a note or a comment still sends the note.
+- Done on a report moves from `d` to `e`, the key Gmail, Superhuman, and GitHub use.
+- Next → opens the next item down the list and no longer moves the one you leave to the end.
+- The yellow new chip is gone. An unread item shows a dot, and an item revised since you read it is unread again.
+- The inbox runs on cmod 8 and needs cmod 8.0.0 or newer. The Inbox and File pages are cmod views, which show beside the session in the Sidebar's inbox panel, and in cmod's browser app and Herdr too.
+
 ## [0.4.2]
 
 ### Fixed

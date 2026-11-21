@@ -1,9 +1,8 @@
 import { expect, setSystemTime, test } from 'bun:test'
-import type { HookStream, ProcessSpawnChunk, ProcessSpawnRequest, ProcessSpawnResult } from 'claude-code'
-import { AbovePrompt } from '../node_modules/@cmodjs/core/mod.js'
+import { AbovePrompt, type Subprocess } from '../node_modules/@cmodjs/core/mod.js'
 import { testMod, type FakeSession } from '../node_modules/@cmodjs/core/testing.js'
 import type { Heard } from '../src/items/heard.js'
-import { cardStatusOf, deliveriesOf, isWithAgent, personOf, queue, senderOf, sendersOf, shownOf, statusOf, unseenOf, type Author, type Content, type Item, type Person } from '../src/items/item.js'
+import { cardStatusOf, deliveriesOf, isWithAgent, personOf, queue, senderOf, sendersOf, statusOf, unseenOf, type Author, type Content, type Item, type Person } from '../src/items/item.js'
 import { format, itemMarkdown, parsePerson, personMarkdown, revisionMarkdown } from '../src/items/markdown.js'
 import { revisedSince } from '../src/items/tree.js'
 import { idOfLink, itemLinks } from '../src/links.js'
@@ -61,12 +60,12 @@ const matchHunk = ['@@ -1,3 +1,3 @@', ' export function check(expr: Expr): Type 
 
 const matchDiff = `diff --git a/src/match.ts b/src/match.ts\n--- a/src/match.ts\n+++ b/src/match.ts\n${matchHunk}\n`
 
-function serving(address: string): HookStream<ProcessSpawnChunk, ProcessSpawnResult> {
-  async function* written(): AsyncGenerator<ProcessSpawnChunk, ProcessSpawnResult> {
-    yield { stream: 'stdout', text: `${address}\n` }
-    return await new Promise<ProcessSpawnResult>(() => undefined)
+function serving(address: string): Subprocess {
+  async function* written() {
+    yield { stream: 'stdout' as const, text: `${address}\n` }
+    return await new Promise<never>(() => undefined)
   }
-  return Object.assign(written(), { result: new Promise<ProcessSpawnResult>(() => undefined) }) as HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+  return Object.assign(written(), { result: new Promise<never>(() => undefined) })
 }
 
 function tested(options: { readonly sessions?: readonly FakeSession[]; readonly files?: Record<string, string>; readonly heard?: Heard; readonly isFirstStart?: true } = {}) {
@@ -83,7 +82,7 @@ function tested(options: { readonly sessions?: readonly FakeSession[]; readonly 
 
 type Tested = ReturnType<typeof tested>
 
-const shownId = (mod: Tested) => shownOf(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders, deliveriesOf(mod.state.memory.items), mod.state.session.viewing)?.id
+const shownId = (mod: Tested) => mod.state.memory.items.find((item) => item.id === mod.state.session.viewing)?.id
 
 const listed = (mod: Tested) => queue(mod.state.memory.items, mod.state.memory.person, mod.state.memory.senders, deliveriesOf(mod.state.memory.items))
 
@@ -153,8 +152,8 @@ async function refusal(mod: Tested, tool: string, input: Record<string, unknown>
 }
 
 async function note(mod: Tested, item: Item, path: string, words: string): Promise<void> {
-  await mod.shown.page.press(`note:${item.id}:${path}`)
-  await mod.shown.page.input(`words:${item.id}:${path}`, words)
+  await mod.shown.view.press(`note:${item.id}:${path}`)
+  await mod.shown.view.input(`words:${item.id}:${path}`, words)
 }
 
 const contentOf = (item: Item | undefined): Content | undefined => item?.revisions.at(-1)?.content
@@ -164,7 +163,7 @@ test('a filed item opens on the page, and the agent gets its link', async () => 
   const answer = await mod.callTool('propose', proposal)
   const item = mod.state.memory.items[0]
 
-  expect(mod.shown.page.id).toBe('inbox')
+  expect(mod.shown.view.id).toBe('inbox')
   expect(shownId(mod)).toBe(item?.id)
   expect('result' in answer && answer.result).toContain(`file://${itemsFolder}/${item?.id}.md`)
 })
@@ -182,18 +181,18 @@ test('the inbox completes each drawing from the code: the file API around a chan
 test('a Files drawing starts folded, and pressing a file opens its code in a proposal and the diff the work made in a report', async () => {
   const mod = tested()
   const proposed = await filed(mod, 'propose', proposal)
-  await expect(mod.shown.page.press(`drawing:${proposed.id}:p0.s.i0.dopen:src/match.ts`)).rejects.toThrow('dopen:src/match.ts')
-  await mod.shown.page.press(`fold:${proposed.id}:p0.s.i0.d`)
-  await mod.shown.page.press(`drawing:${proposed.id}:p0.s.i0.dopen:src/match.ts`)
+  await expect(mod.shown.view.press(`drawing:${proposed.id}:p0.s.i0.dopen:src/match.ts`)).rejects.toThrow('dopen:src/match.ts')
+  await mod.shown.view.press(`fold:${proposed.id}:p0.s.i0.d`)
+  await mod.shown.view.press(`drawing:${proposed.id}:p0.s.i0.dopen:src/match.ts`)
 
-  expect(mod.shown.page.id).toBe('file')
+  expect(mod.shown.view.id).toBe('file')
   expect(mod.state.session.file).toEqual({ project, path: 'src/match.ts', view: { status: 'read', text: files['/work/src/match.ts'], isDiff: false } })
 
   const reported = contentOf(await filed(mod, 'report', report))
   const drawing = reported?.kind === 'report' ? reported.changes[0]?.drawing : undefined
   expect(drawing?.kind === 'files' ? drawing.files[0]?.diff : undefined).toBe(matchHunk)
-  await mod.shown.page.press(`fold:${shownId(mod)}:c0.d`)
-  await mod.shown.page.press(`drawing:${shownId(mod)}:c0.dopen:src/match.ts`)
+  await mod.shown.view.press(`fold:${shownId(mod)}:c0.d`)
+  await mod.shown.view.press(`drawing:${shownId(mod)}:c0.dopen:src/match.ts`)
   expect(mod.state.session.file).toEqual({ project, path: 'src/match.ts', view: { status: 'read', text: matchHunk, isDiff: true } })
 })
 
@@ -204,7 +203,7 @@ test('/inbox hides the page when it shows, marking its item read, and shows it a
   await mod.type('/inbox')
   expect(personAt(mod)?.lastRead).toBe(0)
   await mod.type('/inbox')
-  expect(mod.shown.page.id).toBe('inbox')
+  expect(mod.shown.view.id).toBe('inbox')
 })
 
 test('the toggle hotkey starts unbound and shows or hides the page like /inbox', async () => {
@@ -215,7 +214,7 @@ test('the toggle hotkey starts unbound and shows or hides the page like /inbox',
   await mod.hotkey('toggle')
   expect(personAt(mod)?.lastRead).toBe(0)
   await mod.hotkey('toggle')
-  expect(mod.shown.page.id).toBe('inbox')
+  expect(mod.shown.view.id).toBe('inbox')
 })
 
 test('a report is final: revising one is refused, and the next round of work is a new report', async () => {
@@ -330,7 +329,7 @@ test('approving tells the proposing session and closes the item', async () => {
   const mod = tested()
   const tick = ticking(mod)
   const item = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('approve')
+  await mod.shown.view.press('approve')
   await tick()
 
   expect(mod.shown.prompts).toHaveLength(1)
@@ -341,13 +340,14 @@ test('approving tells the proposing session and closes the item', async () => {
 
 const serverFile = `${itemsFolder.slice(0, -'/items'.length)}/server.json`
 
-function opening(mod: Tested, codes: (url: string) => Promise<string>) {
+function opening(mod: Tested, answers: (url: string) => Promise<void> = async () => undefined) {
   const fetched: string[] = []
   const opened: string[][] = []
   const run = mod.fakes.process.run
   mod.fakes.http.fetch = async (url, init) => {
-    fetched.push(`${init?.method ?? 'GET'} ${url} ${init?.headers?.authorization ?? ''}`)
-    return { status: 200, ok: true, headers: {}, text: JSON.stringify({ code: await codes(url) }) }
+    fetched.push(`${init?.method ?? 'GET'} ${url}`)
+    await answers(url)
+    return { status: 200, ok: true, headers: {}, text: '<!doctype html>' }
   }
   mod.fakes.process.run = async (argv, init) => {
     if (argv[0] !== 'xdg-open') return run === undefined ? Promise.reject(new Error(`No fake runs ${argv[0]}`)) : run(argv, init)
@@ -357,39 +357,49 @@ function opening(mod: Tested, codes: (url: string) => Promise<string>) {
   return { fetched, opened }
 }
 
-test('Open in browser mints a code with the token in server.json and opens the item in this session and project, with the code in the fragment', async () => {
-  const mod = tested({ files: { [serverFile]: JSON.stringify({ port: 4801, token: 'saved-token' }) } })
-  const { fetched, opened } = opening(mod, async () => 'one-time')
+test('Open in browser opens the item in this session and project at the plain address in server.json, with no sign-in', async () => {
+  const mod = tested({ files: { [serverFile]: JSON.stringify({ port: 4801 }) } })
+  const { fetched, opened } = opening(mod)
   const item = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('browser')
+  await mod.shown.view.press('browser')
 
-  expect(fetched).toEqual(['POST http://127.0.0.1:4801/api/codes Bearer saved-token'])
-  expect(opened).toEqual([['xdg-open', `http://127.0.0.1:4801/items/${item.id}?session=test-session&project=%2Fwork#code=one-time`]])
+  expect(fetched).toEqual(['GET http://127.0.0.1:4801'])
+  expect(opened).toEqual([['xdg-open', `http://127.0.0.1:4801/items/${item.id}?session=test-session&project=%2Fwork`]])
   expect(mod.shown.toasts.filter((each) => each.type === 'error')).toEqual([])
 })
 
+test('Open in browser on the list opens the whole inbox in this session and project', async () => {
+  const mod = tested({ files: { [serverFile]: JSON.stringify({ port: 4801 }) } })
+  const { opened } = opening(mod)
+  await filed(mod, 'propose', proposal)
+  await mod.shown.view.press('back')
+  await mod.shown.view.press('browser')
+
+  expect(opened).toEqual([['xdg-open', 'http://127.0.0.1:4801/?session=test-session&project=%2Fwork']])
+})
+
 test('Open in browser waits for the program when server.json names a stopped server, then reads server.json again', async () => {
-  const mod = tested({ files: { [serverFile]: JSON.stringify({ port: 4700, token: 'old-token' }) } })
+  const mod = tested({ files: { [serverFile]: JSON.stringify({ port: 4700 }) } })
   const { fetched, opened } = opening(mod, async (url) => {
-    if (!url.includes(':4700/')) return 'after-restart'
-    await mod.fakes.fs.write?.(serverFile, JSON.stringify({ port: 4800, token: 'new-token' }))
+    if (!url.includes(':4700')) return
+    await mod.fakes.fs.write?.(serverFile, JSON.stringify({ port: 4800 }))
     throw new Error('connection refused')
   })
   const item = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('browser')
+  await mod.shown.view.press('browser')
 
-  expect(fetched).toEqual(['POST http://127.0.0.1:4700/api/codes Bearer old-token', 'POST http://127.0.0.1:4800/api/codes Bearer new-token'])
-  expect(opened).toEqual([['xdg-open', `http://127.0.0.1:4800/items/${item.id}?session=test-session&project=%2Fwork#code=after-restart`]])
+  expect(fetched).toEqual(['GET http://127.0.0.1:4700', 'GET http://127.0.0.1:4800'])
+  expect(opened).toEqual([['xdg-open', `http://127.0.0.1:4800/items/${item.id}?session=test-session&project=%2Fwork`]])
 })
 
 test('Open in browser with no server to ask shows why in a toast and opens nothing', async () => {
   const mod = tested()
-  const { fetched, opened } = opening(mod, async () => 'unused')
+  const { fetched, opened } = opening(mod)
   await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('browser')
+  await mod.shown.view.press('browser')
 
   expect([fetched, opened]).toEqual([[], []])
-  expect(mod.shown.toasts.at(-1)).toEqual({ type: 'error', message: 'The item did not open in the browser', description: `No inbox server answered at the address in ${serverFile}.` })
+  expect(mod.shown.toasts.at(-1)).toEqual({ type: 'error', message: 'The inbox did not open in the browser', description: `No inbox server answered at the address in ${serverFile}.` })
 })
 
 test('notes on several parts go out together as requested changes, each named by its part, and the item waits on the agent', async () => {
@@ -399,7 +409,7 @@ test('notes on several parts go out together as requested changes, each named by
   await note(mod, item, 'p0.s', 'Name the precedent')
   await note(mod, item, 'p0', 'Say who writes the default')
   await note(mod, item, 'p0.s.i2.d', 'Keep the old name')
-  await mod.shown.page.press('request')
+  await mod.shown.view.press('request')
   await tick()
 
   const sent = mod.shown.prompts.at(-1) ?? ''
@@ -416,7 +426,7 @@ test('a note on an idea names the idea by its words', async () => {
   const tick = ticking(mod)
   const item = await filed(mod, 'propose', proposal)
   await note(mod, item, 'p0.s.i0', 'Say which languages do this')
-  await mod.shown.page.press('request')
+  await mod.shown.view.press('request')
   await tick()
 
   expect(mod.shown.prompts.at(-1)).toContain('No default › "A match that covers every case compiles without a default.": "Say which languages do this"')
@@ -429,8 +439,8 @@ test('an empty note is dropped, and saving a saved note empty drops it', async (
   expect(personAt(mod)?.notes).toEqual([])
 
   await note(mod, item, 'p0', 'Drop this')
-  await mod.shown.page.press(`edit:${item.id}:p0`)
-  await mod.shown.page.input(`words:${item.id}:p0`, '')
+  await mod.shown.view.press(`edit:${item.id}:p0`)
+  await mod.shown.view.input(`words:${item.id}:p0`, '')
   expect(personAt(mod)?.notes).toEqual([])
 })
 
@@ -440,9 +450,9 @@ test('approving carries pending notes, and moving past the item with Next → ke
   await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   const item = await filed(mod, 'propose', proposal)
   await note(mod, item, 'p0', 'Say who writes the default')
-  await mod.shown.page.press('next')
-  await mod.shown.page.press('next')
-  await mod.shown.page.press('approve')
+  await mod.shown.view.press('next')
+  await mod.shown.view.press('next')
+  await mod.shown.view.press('approve')
   await tick()
 
   expect(mod.shown.prompts.at(-1)).toContain('approved')
@@ -453,12 +463,12 @@ test('a comment written in the footer is a note on the whole item, pressing it e
   const mod = tested()
   const tick = ticking(mod)
   const item = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('comment')
-  await mod.shown.page.input(`words:${item.id}:`, 'Ship it behind a flag')
-  await expect(mod.shown.page.press('comment')).rejects.toThrow('comment')
-  await mod.shown.page.press(`edit:${item.id}:`)
-  await mod.shown.page.input(`words:${item.id}:`, 'Ship it behind a flag first')
-  await mod.shown.page.press('approve')
+  await mod.shown.view.press('comment')
+  await mod.shown.view.input(`words:${item.id}:`, 'Ship it behind a flag')
+  await expect(mod.shown.view.press('comment')).rejects.toThrow('comment')
+  await mod.shown.view.press(`edit:${item.id}:`)
+  await mod.shown.view.input(`words:${item.id}:`, 'Ship it behind a flag first')
+  await mod.shown.view.press('approve')
   await tick()
 
   expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user approved the proposal "Exhaustive match needs no default" (${item.id}), answer 1, with these notes:`, '- the whole item: "Ship it behind a flag first"', 'Apply them as you go.'].join('\n'))
@@ -470,30 +480,33 @@ test('typed answer text goes when the page moves to another item or the answer i
   const item = await filed(mod, 'propose', proposal)
   const answerField = `answer:${asked.id}`
 
-  await mod.shown.page.press(`view:${asked.id}`)
-  await mod.shown.page.input(answerField, 'Yes, but only paid ones', 'change')
-  await mod.shown.page.press('comment')
+  await mod.shown.view.press('back')
+  await mod.shown.view.press(`view:${asked.id}`)
+  await mod.shown.view.input(answerField, 'Yes, but only paid ones', 'change')
+  await mod.shown.view.press('comment')
   expect(mod.state.session.typed).toEqual({ [answerField]: 'Yes, but only paid ones' })
-  await mod.shown.page.press(`view:${item.id}`)
+  await mod.shown.view.press('back')
+  await mod.shown.view.press(`view:${item.id}`)
   expect(mod.state.session.typed).toEqual({})
 
-  await mod.shown.page.press(`view:${asked.id}`)
-  await mod.shown.page.input(answerField, 'Yes', 'change')
-  await mod.shown.page.input(answerField, 'Yes')
+  await mod.shown.view.press('back')
+  await mod.shown.view.press(`view:${asked.id}`)
+  await mod.shown.view.input(answerField, 'Yes', 'change')
+  await mod.shown.view.input(answerField, 'Yes')
   expect(mod.state.session.typed).toEqual({})
 })
 
 test('words draw only in their field: a saved note opened again once, and typed comment and answer words never as a copy above it', async () => {
   const mod = tested()
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
-  const drawn = async (words: string) => (await mod.shown.page.lines()).filter((line) => line.includes(words)).length
+  const drawn = async (words: string) => (await mod.shown.view.lines()).filter((line) => line.includes(words)).length
   await note(mod, asked, 'why', 'Name who waits on the answer')
-  await mod.shown.page.press(`edit:${asked.id}:why`)
+  await mod.shown.view.press(`edit:${asked.id}:why`)
   expect(await drawn('Name who waits on the answer')).toBe(1)
 
-  await mod.shown.page.press('comment')
-  await mod.shown.page.input(`words:${asked.id}:`, 'option 1 is better', 'change')
-  await mod.shown.page.input(`answer:${asked.id}`, 'Yes, but only paid ones', 'change')
+  await mod.shown.view.press('comment')
+  await mod.shown.view.input(`words:${asked.id}:`, 'option 1 is better', 'change')
+  await mod.shown.view.input(`answer:${asked.id}`, 'Yes, but only paid ones', 'change')
   expect([await drawn('option 1 is better'), await drawn('Yes, but only paid ones')]).toEqual([0, 0])
 })
 
@@ -501,7 +514,7 @@ test('words typed into the Answer box without pressing a keep the page on its it
   const mod = tested()
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   const answerField = `answer:${asked.id}`
-  await mod.shown.page.input(answerField, 'Yes, but only paid ones', 'change')
+  await mod.shown.view.input(answerField, 'Yes, but only paid ones', 'change')
 
   await filed(mod, 'ask_question', { title: 'Do we want paid courses?', why: 'It decides the price' })
 
@@ -514,29 +527,29 @@ test('a on a question moves the keyboard to the Answer box once, and the page sh
   const mod = tested()
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   await mod.press(AbovePrompt, 'open-inbox')
-  await mod.shown.page.press('answer')
-  expect(await mod.shown.page.focusedKey()).toBe(`answer:${asked.id}`)
+  await mod.shown.view.press('answer')
+  expect(await mod.shown.view.focusedKey()).toBe(`answer:${asked.id}`)
 
   await mod.press(AbovePrompt, 'open-inbox')
-  expect(await mod.shown.page.focusedKey()).toBeUndefined()
+  expect(await mod.shown.view.focusedKey()).toBeUndefined()
 
   await mod.hotkey('toggle')
   await mod.hotkey('toggle')
-  expect(await mod.shown.page.focusedKey()).toBeUndefined()
+  expect(await mod.shown.view.focusedKey()).toBeUndefined()
 })
 
 test('opening a note moves the keyboard to its field once, and the page shown again leaves it on the page', async () => {
   const mod = tested()
   const item = await filed(mod, 'propose', proposal)
   await mod.press(AbovePrompt, 'open-inbox')
-  await mod.shown.page.press(`note:${item.id}:p0`)
-  expect(await mod.shown.page.focusedKey()).toBe(`words:${item.id}:p0`)
+  await mod.shown.view.press(`note:${item.id}:p0`)
+  expect(await mod.shown.view.focusedKey()).toBe(`words:${item.id}:p0`)
 
   await mod.press(AbovePrompt, 'open-inbox')
-  expect(await mod.shown.page.focusedKey()).toBeUndefined()
+  expect(await mod.shown.view.focusedKey()).toBeUndefined()
 
-  await mod.shown.page.press('comment')
-  expect(await mod.shown.page.focusedKey()).toBe(`words:${item.id}:`)
+  await mod.shown.view.press('comment')
+  expect(await mod.shown.view.focusedKey()).toBe(`words:${item.id}:`)
 })
 
 test('a new note on a part keeps the note written on an earlier revision of it, and both go out', async () => {
@@ -546,7 +559,7 @@ test('a new note on a part keeps the note written on an earlier revision of it, 
   await note(mod, item, 'p0', 'Say who writes the default')
   await mod.callTool('revise', { id: item.id, proposal: { ...proposal, goal: 'Enums ship with no boilerplate' } })
   await note(mod, item, 'p0', 'Name the precedent')
-  await mod.shown.page.press('request')
+  await mod.shown.view.press('request')
   await tick()
 
   expect(mod.shown.prompts.at(-1)).toContain('(written on revision 1): "Say who writes the default"')
@@ -567,7 +580,7 @@ test('a revise or withdraw on an item the browser answered before this session l
   const mod = tested()
   const item = await filed(mod, 'propose', proposal)
   const before = await fileText(mod, `${itemsFolder}/${item.id}.md`)
-  await mod.fakes.fs.write?.(`${personFolder}/${item.id}.md`, personMarkdown({ notes: [], answers: [{ kind: 'approve', revision: 0, at: '2026-10-22T11:00:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:00:00.000Z' }))
+  await mod.fakes.fs.write?.(`${personFolder}/${item.id}.md`, personMarkdown({ notes: [], answers: [{ kind: 'approve', revision: 0, at: '2026-10-22T11:00:00.000Z' }], lastRead: 0 }))
 
   const revised = await refusal(mod, 'revise', { id: item.id, proposal: { ...proposal, goal: 'Enums ship with no boilerplate' } })
   const withdrawn = await refusal(mod, 'withdraw', { id: item.id, reason: 'Moved to billing' })
@@ -581,7 +594,7 @@ test('a revision ends the wait on the agent', async () => {
   const mod = tested()
   const item = await filed(mod, 'propose', proposal)
   await note(mod, item, 'p0', 'Say who writes the default')
-  await mod.shown.page.press('request')
+  await mod.shown.view.press('request')
   await mod.callTool('revise', { id: item.id, proposal: { ...proposal, goal: 'Enums ship with no boilerplate' } })
 
   const fresh = mod.state.memory.items[0]
@@ -593,16 +606,16 @@ test('one press opens a Problem a revision left unchanged, with its whole Soluti
   const mod = tested()
   await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   const item = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('next')
+  await mod.shown.view.press('next')
   const added = { title: 'A default hides a new case', ideas: [{ idea: 'A case added later falls into the default unnoticed.' }], solution: { title: 'Warn on a missing case', ideas: [{ idea: 'The checker names the case the match misses.', drawing: filesDrawing }] } }
   await mod.callTool('revise', { id: item.id, proposal: { ...proposal, problems: [...proposal.problems, added] } })
-  await mod.shown.page.press(`fold:${item.id}:p0`)
-  await mod.shown.page.press(`drawing:${item.id}:p0.s.i2.dopen`)
+  await mod.shown.view.press(`fold:${item.id}:p0`)
+  await mod.shown.view.press(`drawing:${item.id}:p0.s.i2.dopen`)
 
-  expect(mod.shown.page.id).toBe('file')
+  expect(mod.shown.view.id).toBe('file')
 })
 
-test('picking an option, answering a question, and marking a report done each tell the agent which', async () => {
+test('picking an option and answering a question each tell the agent which, a plain Done on a report tells it nothing, and Done with a comment does', async () => {
   const mod = tested()
   const tick = ticking(mod)
   await filed(mod, 'propose_options', {
@@ -611,45 +624,56 @@ test('picking an option, answering a question, and marking a report done each te
     problem: { title: 'Defaults', ideas: [{ idea: 'Users write dead code.' }] },
     options: [solution, { title: 'Default required', precedent: 'Kotlin', ideas: [solution.ideas[0]] }],
   })
-  await mod.shown.page.press('option1')
+  await mod.shown.view.press('option1')
   await tick()
   expect(mod.shown.prompts.at(-1)).toContain('picked "Default required"')
 
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
-  await mod.shown.page.input(`answer:${asked.id}`, 'Yes, but only paid ones')
+  await mod.shown.view.input(`answer:${asked.id}`, 'Yes, but only paid ones')
   await tick()
   expect(mod.shown.prompts.at(-1)).toContain('"Yes, but only paid ones"')
 
-  await filed(mod, 'report', report)
-  await mod.shown.page.press('done')
+  const prompts = mod.shown.prompts.length
+  const plain = await filed(mod, 'report', report)
+  await mod.shown.view.press('done')
   await tick()
-  expect(mod.shown.prompts.at(-1)).toContain('done')
+  expect([mod.shown.prompts.length, statusOf(plain, personIn(mod, plain))]).toEqual([prompts, 'answered'])
+
+  const commented = await filed(mod, 'report', { ...report, title: 'The inbox ships again' })
+  await mod.shown.view.press('comment')
+  await mod.shown.view.input(`words:${commented.id}:`, 'Release it too')
+  await mod.shown.view.press('done')
+  await tick()
+  expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user marked the report "The inbox ships again" (${commented.id}), answer 1 done, with these notes:`, '- the whole item: "Release it too"', 'Apply them as you go.'].join('\n'))
 })
 
-test('Next → puts the item behind the rest, marks it read, and opens the next one, and it shows only while another item waits', async () => {
+test('Next → marks the item read and opens the next one down the list, newest first, and it shows only while another item waits', async () => {
   const mod = tested()
-  const first = await filed(mod, 'ask_question', { title: 'First question', why: 'It unlocks the first slice' })
-  const second = await filed(mod, 'ask_question', { title: 'Second question', why: 'It unlocks the second slice' })
+  const filedAt = async (at: string, title: string) => {
+    setSystemTime(new Date(at))
+    try {
+      return await filed(mod, 'ask_question', { title, why: 'It unlocks a slice' })
+    } finally {
+      setSystemTime()
+    }
+  }
+  const first = await filedAt('2026-10-22T10:00:00.000Z', 'First question')
+  const second = await filedAt('2026-10-22T11:00:00.000Z', 'Second question')
   const queued = () => listed(mod).map((each) => [each.id, unseenOf(each, personIn(mod, each))])
   expect(shownId(mod)).toBe(second.id)
 
-  await mod.shown.page.press('next')
+  await mod.shown.view.press('next')
   expect(shownId(mod)).toBe(first.id)
-  try {
-    setSystemTime(new Date(Date.parse(personIn(mod, second).queuedAt) + 60_000))
-    await mod.shown.page.press('next')
-  } finally {
-    setSystemTime()
-  }
+  await mod.shown.view.press('next')
   expect(shownId(mod)).toBe(second.id)
   expect(queued()).toEqual([
     [second.id, undefined],
     [first.id, undefined],
   ])
 
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('reject')
   expect(shownId(mod)).toBe(first.id)
-  await expect(mod.shown.page.press('next')).rejects.toThrow('next')
+  await expect(mod.shown.view.press('next')).rejects.toThrow('next')
 })
 
 test('rejecting tells the agent what was rejected, with the notes when there are any, to resubmit it with revise, and a report has no Reject', async () => {
@@ -657,7 +681,7 @@ test('rejecting tells the agent what was rejected, with the notes when there are
   const tick = ticking(mod)
   const resubmit = "To resubmit it, revise it with the inbox's revise tool, which reopens it for the user. Never file it again as a new item."
   const proposed = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('reject')
   await tick()
   expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user rejected the proposal "Exhaustive match needs no default" (${proposed.id}), answer 1`, resubmit].join('\n'))
   expect(statusOf(proposed, personIn(mod, proposed))).toBe('answered')
@@ -669,17 +693,17 @@ test('rejecting tells the agent what was rejected, with the notes when there are
     options: [solution, { title: 'Default required', precedent: 'Kotlin', ideas: [solution.ideas[0]] }],
   })
   await note(mod, options, 'problem', 'Neither handles generics')
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('reject')
   await tick()
   expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user rejected every option in "Pick how a match handles a missing case" (${options.id}), answer 1, with these notes:`, '- Problem: Defaults: "Neither handles generics"', 'Apply them as you go.', resubmit].join('\n'))
 
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('reject')
   await tick()
   expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user rejected the question "Do we want courses?" (${asked.id}), answer 1`, resubmit].join('\n'))
 
   await filed(mod, 'report', report)
-  await expect(mod.shown.page.press('reject')).rejects.toThrow('reject')
+  await expect(mod.shown.view.press('reject')).rejects.toThrow('reject')
 })
 
 const choice = {
@@ -692,21 +716,21 @@ const choice = {
 test('an agent revises a rejected proposal, choice, and question, and each revision reopens it, listed as changed, with the rejection kept', async () => {
   const mod = tested()
   const proposed = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('reject')
   const picking = await filed(mod, 'propose_options', choice)
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('reject')
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('reject')
   const rejected = [proposed, picking, asked].map(({ id }) => id)
   const statuses = () =>
     rejected.map((id) => {
       const item = mod.state.memory.items.find((each) => each.id === id)
-      return item === undefined ? 'gone' : [statusOf(item, personIn(mod, item)), cardStatusOf(item, personIn(mod, item), mod.state.memory.senders, deliveriesOf(mod.state.memory.items))?.word]
+      return item === undefined ? 'gone' : [statusOf(item, personIn(mod, item)), cardStatusOf(item, personIn(mod, item), mod.state.memory.senders, deliveriesOf(mod.state.memory.items))?.word, unseenOf(item, personIn(mod, item))]
     })
   expect(statuses()).toEqual([
-    ['answered', 'rejected'],
-    ['answered', 'rejected'],
-    ['answered', 'rejected'],
+    ['answered', 'rejected', undefined],
+    ['answered', 'rejected', undefined],
+    ['answered', 'rejected', undefined],
   ])
 
   const revised = [
@@ -717,9 +741,9 @@ test('an agent revises a rejected proposal, choice, and question, and each revis
 
   expect(revised.map((each) => ('result' in each ? String(each.result).split(',')[0] : each.deny))).toEqual(rejected.map((id) => `Revised ${id} to revision 2`))
   expect(statuses()).toEqual([
-    ['open', 'changed'],
-    ['open', 'changed'],
-    ['open', 'changed'],
+    ['open', undefined, 'changed'],
+    ['open', undefined, 'changed'],
+    ['open', undefined, 'changed'],
   ])
   expect(listed(mod).map((each) => each.id).sort()).toEqual([...rejected].sort())
   const one = await mod.callTool('read', { id: proposed.id })
@@ -732,11 +756,11 @@ test('an agent revises a rejected proposal, choice, and question, and each revis
 test('revise still refuses an approved proposal, a picked choice, an answered question, and a withdrawn item, each with its reason', async () => {
   const mod = tested()
   const approved = await filed(mod, 'propose', proposal)
-  await mod.shown.page.press('approve')
+  await mod.shown.view.press('approve')
   const picked = await filed(mod, 'propose_options', choice)
-  await mod.shown.page.press('option0')
+  await mod.shown.view.press('option0')
   const answered = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
-  await mod.shown.page.input(`answer:${answered.id}`, 'Yes')
+  await mod.shown.view.input(`answer:${answered.id}`, 'Yes')
   const withdrawn = await filed(mod, 'ask_question', { title: 'Do we want paid courses?', why: 'It decides the schema' })
   await mod.callTool('withdraw', { id: withdrawn.id, reason: 'Moved to billing' })
 
@@ -765,7 +789,8 @@ test('an item is new until the page moves past it, an agent filing another never
   }
   expect([unseen(first.id), unseen(second.id)]).toEqual(['new', 'new'])
 
-  await mod.shown.page.press(`view:${first.id}`)
+  await mod.shown.view.press('back')
+  await mod.shown.view.press(`view:${first.id}`)
   expect([unseen(first.id), unseen(second.id)]).toEqual(['new', undefined])
 
   await mod.callTool('revise', { id: second.id, question: { title: 'Second question, revised', why: 'It unlocks the second slice' } })
@@ -779,34 +804,114 @@ test('every item in the list opens from the Sidebar, the sixth one included, as 
   for (const title of titles) filedItems.push(await filed(mod, 'ask_question', { title, why: 'It unlocks a slice' }))
   const sixth = filedItems[5]
 
-  await mod.shown.page.press(`view:${sixth?.id}`)
+  await mod.shown.view.press('back')
+  await mod.shown.view.press(`view:${sixth?.id}`)
 
   expect(shownId(mod)).toBe(sixth?.id)
+})
+
+test('the page opens on the list, and a kind tab lists only that kind, with All listing every kind again', async () => {
+  const mod = tested()
+  const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
+  const shipped = await filed(mod, 'report', report)
+  await mod.shown.view.press('back')
+  const rows = async () => {
+    const opened: string[] = []
+    for (const item of [asked, shipped]) {
+      const isListed = await mod.shown.view.press(`view:${item.id}`).then(
+        () => true,
+        () => false,
+      )
+      if (!isListed) continue
+      opened.push(item.id)
+      await mod.shown.view.press('back')
+    }
+    return opened
+  }
+
+  expect(shownId(mod)).toBeUndefined()
+  expect(await rows()).toEqual([asked.id, shipped.id])
+  await mod.shown.view.press('tab:report')
+  expect(await rows()).toEqual([shipped.id])
+  await mod.shown.view.press('tab:all')
+  expect(await rows()).toEqual([asked.id, shipped.id])
+})
+
+test('Done on the selected rows closes only the reports among them, tells no agent, and clears the selection', async () => {
+  const mod = tested()
+  const tick = ticking(mod)
+  const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
+  const first = await filed(mod, 'report', report)
+  const second = await filed(mod, 'report', { ...report, title: 'The inbox ships again' })
+  await mod.shown.view.press('back')
+  const prompts = mod.shown.prompts.length
+
+  for (const item of [asked, first, second]) await mod.shown.view.press(`select:${item.id}`)
+  await mod.shown.view.press('done-selected')
+  await tick()
+
+  expect([asked, first, second].map((item) => statusOf(item, personIn(mod, item)))).toEqual(['open', 'answered', 'answered'])
+  expect([mod.shown.prompts.length, mod.state.session.selected]).toEqual([prompts, []])
+})
+
+test('Select all picks every row the tab lists, and Mark read marks each of them read without answering it', async () => {
+  const mod = tested()
+  const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
+  const shipped = await filed(mod, 'report', report)
+  await mod.shown.view.press('back')
+
+  await mod.shown.view.press('tab:question')
+  await mod.shown.view.press('select-all')
+  expect(mod.state.session.selected).toEqual([asked.id])
+  await mod.shown.view.press('tab:all')
+  await mod.shown.view.press('select-all')
+  await mod.shown.view.press('read-selected')
+
+  expect([asked, shipped].map((item) => [unseenOf(item, personIn(mod, item)), statusOf(item, personIn(mod, item))])).toEqual([
+    [undefined, 'open'],
+    [undefined, 'open'],
+  ])
+})
+
+test('Done on a report row closes it from the list without opening it, and tells no agent', async () => {
+  const mod = tested()
+  const tick = ticking(mod)
+  const shipped = await filed(mod, 'report', report)
+  await mod.shown.view.press('back')
+  const prompts = mod.shown.prompts.length
+
+  await mod.shown.view.press(`done:${shipped.id}`)
+  await tick()
+
+  expect([statusOf(shipped, personIn(mod, shipped)), shownId(mod), mod.shown.prompts.length]).toEqual(['answered', undefined, prompts])
 })
 
 test('an answered item stays in the Sidebar in the Archive, folded under one line until it is opened, and opens there with its answer and no answer buttons', async () => {
   const mod = tested()
   const rejected = await filed(mod, 'propose', proposal)
   await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
-  await mod.shown.page.press(`view:${rejected.id}`)
-  await mod.shown.page.press('reject')
+  await mod.shown.view.press('back')
+  await mod.shown.view.press(`view:${rejected.id}`)
+  await mod.shown.view.press('reject')
+  await mod.shown.view.press('back')
 
-  await expect(mod.shown.page.press(`view:${rejected.id}`)).rejects.toThrow(rejected.id)
-  await mod.shown.page.press('archive')
-  await mod.shown.page.press(`view:${rejected.id}`)
+  await expect(mod.shown.view.press(`view:${rejected.id}`)).rejects.toThrow(rejected.id)
+  await mod.shown.view.press('archive')
+  await mod.shown.view.press(`view:${rejected.id}`)
 
   expect(shownId(mod)).toBe(rejected.id)
-  await expect(mod.shown.page.press('approve')).rejects.toThrow('approve')
+  await expect(mod.shown.view.press('approve')).rejects.toThrow('approve')
 })
 
 test('moving the page to another item closes the note being written, so the next filed item opens', async () => {
   const mod = tested()
   const first = await filed(mod, 'ask_question', { title: 'First question', why: 'It unlocks the first slice' })
   const second = await filed(mod, 'ask_question', { title: 'Second question', why: 'It unlocks the second slice' })
-  await mod.shown.page.press('comment')
+  await mod.shown.view.press('comment')
   expect(mod.state.session.editing).toBe(`${second.id}:`)
 
-  await mod.shown.page.press(`view:${first.id}`)
+  await mod.shown.view.press('back')
+  await mod.shown.view.press(`view:${first.id}`)
   expect(mod.state.session.editing).toBe(null)
   const third = await filed(mod, 'ask_question', { title: 'Third question', why: 'It unlocks the third slice' })
   expect(shownId(mod)).toBe(third.id)
@@ -880,7 +985,7 @@ test('a diagram keeps its boxes where they fit, and draws top to bottom where th
   const branching = 'graph TD\n  Checks[the checks run on the item] -->|a finding at error| Refused[the agent gets every message]\n  Checks -->|none, or only warnings| Filed[the item files with its warnings]'
   await filed(mod, 'propose', withIdeas([...solution.ideas, { idea: 'A finding at error refuses the item.', drawing: { kind: 'diagram', mermaid: branching } }]))
 
-  const narrow = (await mod.shown.page.lines({ columns: 70 })).join('\n')
+  const narrow = (await mod.shown.view.lines({ columns: 70 })).join('\n')
   expect(narrow).toContain('│ the checks run on the item')
   expect(narrow).toContain('│ ├─ a finding at error')
   expect(narrow).toContain('│ │  ▼')
@@ -888,14 +993,14 @@ test('a diagram keeps its boxes where they fit, and draws top to bottom where th
   expect(narrow).toContain('│ └─ none, or only warnings')
   expect(narrow).toContain('│    the item files with its warnings')
   expect(narrow).not.toContain('┌')
-  expect((await mod.shown.page.lines({ columns: 200 })).join('\n')).toContain('┌')
+  expect((await mod.shown.view.lines({ columns: 200 })).join('\n')).toContain('┌')
 })
 
 test('a list on the page draws its bullets as •, nested ones indented, and numbered ones keep their numbers', async () => {
   const mod = tested()
   await filed(mod, 'propose', withIdeas([...solution.ideas, { idea: 'A task waits on:\n- you\n  - with a link\n- another task\n\nIn order:\n1. file\n2. answer' }]))
 
-  const lines = (await mod.shown.page.lines()).join('\n')
+  const lines = (await mod.shown.view.lines()).join('\n')
   expect(lines).toContain('│  • you')
   expect(lines).toContain('│    • with a link')
   expect(lines).toContain('│  • another task')
@@ -907,7 +1012,7 @@ const here = { session: 'test-session' }
 
 const planner = { session: 'planner' }
 
-const answered = (...answers: readonly Record<string, unknown>[]) => personMarkdown({ notes: [], answers: answers.map((each) => ({ revision: 0, ...each })) as unknown as Person['answers'], lastRead: 0, queuedAt: '2026-10-22T10:00:00.000Z' })
+const answered = (...answers: readonly Record<string, unknown>[]) => personMarkdown({ notes: [], answers: answers.map((each) => ({ revision: 0, ...each })) as unknown as Person['answers'], lastRead: 0 })
 
 const requested = (words: string, at: string) => ({ kind: 'correct', corrections: [{ path: '', target: 'the whole item', words, revision: 0 }], at })
 
@@ -1054,15 +1159,15 @@ test('the first start of this release writes delivering-since and sends no answe
 
 test('each session runs inbox serve on the data folder as a service of the computer, so one copy serves the browser whenever the person is logged in', async () => {
   const mod = tested()
-  const spawned: ProcessSpawnRequest[] = []
+  const spawned: (readonly string[])[] = []
   mod.fakes.process.spawn = (request) => {
-    spawned.push(request)
+    spawned.push(request.argv)
     return serving('127.0.0.1:4800')
   }
   await mod.start()
   await mod.settle()
 
-  expect(spawned.map((request) => request.argv)).toEqual([['/test/home/.local/share/cmod/programs/cmod', 'program', 'inbox', '--service', '--', 'inbox', 'serve', '--data', '/test/home/.local/share/cmod/data/inbox']])
+  expect(spawned).toEqual([['/test/home/.local/share/cmod/programs/cmod', 'program', 'inbox', '--service', '--', 'inbox', 'serve', '--data', '/test/home/.local/share/cmod/data/inbox']])
 })
 
 test('an item whose files were deleted drops out of memory and out of read', async () => {
@@ -1098,7 +1203,7 @@ test('read lists what is open with each link, and gives one item with every answ
 
   const revised = await mod.callTool('revise', { id: item.id, question: { title: 'Do we want paid courses?', why: 'It decides the schema' } })
   expect('result' in revised && revised.result).toContain(`Revised ${item.id} to revision 2,`)
-  await mod.shown.page.input(`answer:${item.id}`, 'Yes')
+  await mod.shown.view.input(`answer:${item.id}`, 'Yes')
   const one = await mod.callTool('read', { id: item.id })
   const read = JSON.parse('result' in one ? String(one.result) : '{}') as { status: string; revision: number; answers: { kind: string; words: string; revision: number }[] }
   expect(read.status).toBe('answered')
@@ -1144,9 +1249,9 @@ test('a delivered item names its report, and the report lists what it delivers, 
   const proposed = await filed(mod, 'propose', proposal)
   const shipped = await filed(mod, 'report', { ...report, delivers: [proposed.id] })
 
-  const reportLines = (await mod.shown.page.lines()).join('\n')
-  await mod.shown.page.press(`thread:${shipped.id}:${proposed.id}`)
-  const proposalLines = (await mod.shown.page.lines()).join('\n')
+  const reportLines = (await mod.shown.view.lines()).join('\n')
+  await mod.shown.view.press(`thread:${shipped.id}:${proposed.id}`)
+  const proposalLines = (await mod.shown.view.lines()).join('\n')
 
   expect(reportLines).toContain('Delivers')
   expect(reportLines).toContain('Proposal · Exhaustive match needs no default')
@@ -1155,7 +1260,7 @@ test('a delivered item names its report, and the report lists what it delivers, 
   expect(proposalLines).toContain('delivered · ')
   expect(proposalLines).toContain('Delivered by')
   expect(proposalLines).toContain('Report · The inbox ships')
-  await mod.shown.page.press(`thread:${proposed.id}:${shipped.id}`)
+  await mod.shown.view.press(`thread:${proposed.id}:${shipped.id}`)
   expect(shownId(mod)).toBe(shipped.id)
 })
 
@@ -1192,10 +1297,10 @@ test('an answer to a revision another session replaced is refused, and the item 
   const revised = { ...fresh, revisions: [...fresh.revisions, { ...fresh.origin, at: '2026-10-22T11:00:00.000Z', content: { kind: 'question', title: 'Do we want paid courses?', why: 'It decides the schema' } as const }], updatedAt: '2026-10-22T11:00:00.000Z' }
   await mod.fakes.fs.write?.(`${revisionsFolder}/courses/1.md`, revisionMarkdown(revised, 0))
   await mod.fakes.fs.write?.(`${itemsFolder}/courses.md`, itemMarkdown(revised))
-  await mod.shown.page.press('scope:all')
-  await mod.shown.page.press('archive')
-  await mod.shown.page.press('view:courses')
-  await mod.shown.page.input('answer:courses', 'Yes')
+  await mod.shown.view.select('scope', 'all')
+  await mod.shown.view.press('archive')
+  await mod.shown.view.press('view:courses')
+  await mod.shown.view.input('answer:courses', 'Yes')
 
   expect(mod.shown.toasts.at(-1)?.type).toBe('warning')
   expect(statusAt(mod)).toBe('open')
@@ -1218,9 +1323,9 @@ test('a second press while an answer is sending is ignored, so the person sees n
     return write?.(path, text)
   }
 
-  const first = mod.shown.page.press('reject')
+  const first = mod.shown.view.press('reject')
   await isHeld
-  const second = mod.shown.page.press('reject')
+  const second = mod.shown.view.press('reject')
   await new Promise((resolve) => setTimeout(resolve, 500))
   release()
   await Promise.all([first, second])
@@ -1249,7 +1354,7 @@ test('a blank answer is refused with a warning, and the question keeps waiting',
   const mod = tested()
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
 
-  await mod.shown.page.input(`answer:${asked.id}`, '  \n')
+  await mod.shown.view.input(`answer:${asked.id}`, '  \n')
 
   expect(mod.shown.toasts.at(-1)).toEqual({ type: 'warning', message: 'Write an answer before you send it.' })
   expect(statusOf(asked, personIn(mod, asked))).toBe('open')
@@ -1272,7 +1377,7 @@ test('a note on a revision another session replaced is refused with a warning, a
 test('a note on an item the browser answered meanwhile is refused with a warning, and the answer stays', async () => {
   const mod = tested()
   const item = await filed(mod, 'propose', proposal)
-  const inBrowser: Person = { notes: [], answers: [{ kind: 'reject', revision: 0, at: '2026-10-22T11:00:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:00:00.000Z' }
+  const inBrowser: Person = { notes: [], answers: [{ kind: 'reject', revision: 0, at: '2026-10-22T11:00:00.000Z' }], lastRead: 0 }
   await mod.fakes.fs.write?.(`${personFolder}/${item.id}.md`, personMarkdown(inBrowser))
 
   await note(mod, item, 'goal', 'Say it in one line')
@@ -1284,12 +1389,12 @@ test('a note on an item the browser answered meanwhile is refused with a warning
 test('an item whose sessions all ended opens from the Archive, and an answer nobody is running to hear stays with the item, and the user is told', async () => {
   const mod = tested({ files: stored(question([{ session: 'ended' }])) })
   await mod.type('/inbox')
-  await mod.shown.page.press('scope:all')
+  await mod.shown.view.select('scope', 'all')
   expect(shownId(mod)).toBeUndefined()
-  expect((await mod.shown.page.lines()).some((line) => line.includes('✓ Inbox zero'))).toBe(true)
-  await mod.shown.page.press('archive')
-  await mod.shown.page.press('view:courses')
-  await mod.shown.page.input('answer:courses', 'Yes')
+  expect((await mod.shown.view.lines()).some((line) => line.includes('✓ Inbox zero'))).toBe(true)
+  await mod.shown.view.press('archive')
+  await mod.shown.view.press('view:courses')
+  await mod.shown.view.input('answer:courses', 'Yes')
 
   expect(mod.shown.toasts.at(-1)).toEqual({ type: 'warning', message: 'No running session follows "Do we want courses?"', description: 'Your answer is kept with the item, and reaches its session when it resumes.' })
   expect(statusAt(mod)).toBe('answered')
@@ -1299,15 +1404,17 @@ test("the inbox shows this session's items, and widens to the project with its w
   const another = (id: string, at: string) => ({ ...question([{ session: 'planner' }]), id, project: at })
   const mod = tested({ files: stored(another('worktree', '/work/worktrees/design'), another('elsewhere', '/elsewhere')) })
   await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
+  await mod.shown.view.press('back')
 
-  await expect(mod.shown.page.press('view:worktree')).rejects.toThrow('view:worktree')
-  await mod.shown.page.press('scope:project')
-  await mod.shown.page.press('archive')
-  await mod.shown.page.press('view:worktree')
+  await expect(mod.shown.view.press('view:worktree')).rejects.toThrow('view:worktree')
+  await mod.shown.view.select('scope', 'project')
+  await mod.shown.view.press('archive')
+  await mod.shown.view.press('view:worktree')
   expect(shownId(mod)).toBe('worktree')
-  await expect(mod.shown.page.press('view:elsewhere')).rejects.toThrow('view:elsewhere')
-  await mod.shown.page.press('scope:all')
-  await mod.shown.page.press('view:elsewhere')
+  await mod.shown.view.press('back')
+  await expect(mod.shown.view.press('view:elsewhere')).rejects.toThrow('view:elsewhere')
+  await mod.shown.view.select('scope', 'all')
+  await mod.shown.view.press('view:elsewhere')
   expect(shownId(mod)).toBe('elsewhere')
 })
 
@@ -1331,8 +1438,8 @@ test("an item stores only its session's id, and read names the session by its ti
 
   expect(await fileText(mod, `${itemsFolder}/do-we-want-paid-courses.md`)).toContain('\norigin: {"session":"test-session"}\n')
   expect(listed.map((each) => [each.id, each.origin])).toEqual([
-    ['courses', 'inbox web view'],
     ['do-we-want-paid-courses', 'php#'],
+    ['courses', 'inbox web view'],
   ])
   expect(senderIn(mod, filedEarlier as unknown as Item, filedEarlier.origin)).toEqual({ title: 'inbox web view', color: 'green', isRunning: false })
 })
@@ -1381,10 +1488,11 @@ test('after /clear and after /resume, memory, the page, and read still hold ever
   for (const source of ['clear', 'resume'] as const) {
     await mod.startSession({ source, id: `after-${source}` })
     const listed = await mod.callTool('read', {})
-    await mod.shown.page.press('scope:all')
+    await mod.shown.view.select('scope', 'all')
+    const lines = (await mod.shown.view.lines()).join('\n')
 
     expect(mod.state.memory.items.map((each) => each.id).sort()).toEqual(open)
     expect((JSON.parse('result' in listed ? String(listed.result) : '[]') as { id: string }[]).map((each) => each.id).sort()).toEqual(open)
-    expect(shownId(mod)).toBeDefined()
+    expect([lines.includes(proposal.title), lines.includes(`▸ Archive 1`)]).toEqual([true, true])
   }
 })

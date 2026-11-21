@@ -286,7 +286,7 @@ button {
   rotate: 90deg;
 }
 
-.scopes {
+.segments {
   display: flex;
   flex-wrap: wrap;
   justify-self: start;
@@ -296,7 +296,7 @@ button {
   background: color-mix(in oklch, var(--text) 6%, var(--page));
 }
 
-.scopes__scope {
+.segments__segment {
   padding: 0.25rem 0.75rem;
   border: 0;
   border-radius: calc(var(--radius) - 0.1875rem);
@@ -308,7 +308,7 @@ button {
   transition: background-color 150ms var(--ease), color 150ms var(--ease);
 }
 
-.scopes__scope[aria-pressed='true'] {
+.segments__segment[aria-pressed='true'] {
   background: var(--surface);
   color: var(--text);
   font-weight: 600;
@@ -347,7 +347,7 @@ button {
   border-radius: 50%;
 }
 
-.card[data-status='unseen'] .card__dot {
+.card[data-unread='true'] .card__dot {
   background: var(--focus);
 }
 
@@ -357,6 +357,8 @@ button {
 
 .card__from {
   grid-area: from;
+  display: flex;
+  gap: 0.5rem;
   min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -385,12 +387,12 @@ button {
   text-wrap: pretty;
 }
 
-.card[data-status='unseen'] :is(.card__from, .card__title) {
+.card[data-unread='true'] :is(.card__from, .card__title) {
   font-weight: 650;
   color: var(--text);
 }
 
-.card[data-status='unseen'] .card__when {
+.card[data-unread='true'] .card__when {
   font-weight: 600;
   color: var(--focus);
 }
@@ -405,8 +407,13 @@ button {
 }
 
 .card__kind {
-  font-weight: 600;
+  font-weight: 650;
   color: oklch(var(--ink-l) var(--ink-c) var(--hue));
+}
+
+.card__kind[data-kind='report'] {
+  font-weight: 500;
+  color: var(--text-faint);
 }
 
 .card__status {
@@ -419,6 +426,67 @@ button {
 
 .card__thread {
   color: var(--text-faint);
+}
+
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  align-items: start;
+  border-radius: var(--radius);
+}
+
+.row[data-selected='true'] {
+  background: color-mix(in oklch, var(--focus) 8%, transparent);
+}
+
+.row__select {
+  margin-block-start: 0.875rem;
+  justify-self: end;
+  accent-color: var(--focus);
+  cursor: pointer;
+}
+
+.row__done {
+  position: absolute;
+  inset-block-start: 0.375rem;
+  inset-inline-end: 0.5rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms var(--ease);
+}
+
+.row:is(:hover, :focus-within) .row__done {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  min-block-size: 2.25rem;
+  padding-inline: 0.5rem;
+}
+
+.selection__all {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.selection__all input {
+  accent-color: var(--focus);
+}
+
+.selection__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .thread {

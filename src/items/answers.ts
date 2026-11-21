@@ -54,16 +54,12 @@ export function markRead(store: Store, item: Item, seen: number): Promise<Person
   return updatePerson(store, item, (fresh) => ({ ...fresh, lastRead: Math.max(fresh.lastRead, seen) }))
 }
 
-export async function skip(store: Store, item: Item, seen: number): Promise<Person> {
-  return updatePerson(store, item, (fresh) => ({ ...fresh, lastRead: Math.max(fresh.lastRead, seen), queuedAt: new Date().toISOString() }))
-}
-
 export type Action = {
   readonly id: string
   readonly label: string
   readonly hotkey?: string
   readonly isPrimary: boolean
-  readonly does: Given | 'answer' | 'comment' | 'skip'
+  readonly does: Given | 'answer' | 'comment' | 'next'
 }
 
 export function actionsOf(item: Item, person: Person, { hasNext, isCommenting }: { readonly hasNext: boolean; readonly isCommenting: boolean }): Action[] {
@@ -76,14 +72,14 @@ export function actionsOf(item: Item, person: Person, { hasNext, isCommenting }:
     content.kind === 'proposal'
       ? [{ id: 'approve', label: `Approve${withNotes}`, hotkey: 'a', isPrimary: count === 0, does: { kind: 'approve' } }]
       : content.kind === 'report'
-        ? [{ id: 'done', label: `Done${withNotes}`, hotkey: 'd', isPrimary: count === 0, does: { kind: 'acknowledge' } }]
+        ? [{ id: 'done', label: `${wording.done}${withNotes}`, hotkey: 'e', isPrimary: count === 0, does: { kind: 'acknowledge' } }]
         : content.kind === 'options'
           ? content.options.map((option, index) => ({ id: `option${index}`, label: `Pick option ${index + 1}${withNotes}`, ...(index < 9 ? { hotkey: `${index + 1}` } : {}), isPrimary: false, does: { kind: 'option', option: option.title } }))
           : [{ id: 'answer', label: wording.answer, hotkey: 'a', isPrimary: count === 0, does: 'answer' }]
   const reject: Action[] = content.kind === 'report' ? [] : [{ id: 'reject', label: `Reject${withNotes}`, hotkey: 'x', isPrimary: false, does: { kind: 'reject' } }]
   const isCommented = person.notes.some((note) => note.path === '' && note.revision === revisionOf(item))
   const comment: Action[] = isCommented || isCommenting ? [] : [{ id: 'comment', label: 'Comment', hotkey: 'm', isPrimary: false, does: 'comment' }]
-  const next: Action[] = hasNext ? [{ id: 'next', label: 'Next →', hotkey: 'n', isPrimary: false, does: 'skip' }] : []
+  const next: Action[] = hasNext ? [{ id: 'next', label: 'Next →', hotkey: 'n', isPrimary: false, does: 'next' }] : []
   return [...request, ...closing, ...reject, ...comment, ...next]
 }
 

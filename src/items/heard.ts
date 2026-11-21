@@ -1,4 +1,4 @@
-import { current, revisionNumber, senderOf, type Answer, type Item, type Person, type Senders } from './item.js'
+import { current, isFollowed, revisionNumber, senderOf, type Answer, type Item, type Person, type Senders, type Summary } from './item.js'
 
 type Mark = { readonly at: string; readonly count: number }
 
@@ -30,9 +30,13 @@ function messageOf(item: Item, answer: Answer, number: number): string {
   return [`Inbox: the user requested changes to ${named}:`, ...noteLines(answer), `Revise it with the inbox's revise tool, which keeps the item open for the user.`].join('\n')
 }
 
+export function isPlainDone(answer: Answer): boolean {
+  return answer.kind === 'acknowledge' && answer.words === undefined && (answer.corrections ?? []).length === 0
+}
+
 function toldOf(item: Item, person: Person, session: string, senders: Senders): Told[] {
   const revised = item.revisions.flatMap((revision, index): Told[] => (index === 0 || revision.session === session ? [] : [{ kind: 'note', file: 'item', at: revision.at, text: `${senderOf(revision, item.project, senders).title} revised "${revision.content.title}" (${item.id}) in the inbox.` }]))
-  const answered = person.answers.map((answer, index): Told => ({ kind: 'prompt', file: 'person', at: answer.at, text: messageOf(item, answer, index + 1) }))
+  const answered = person.answers.flatMap((answer, index): Told[] => (isPlainDone(answer) ? [] : [{ kind: 'prompt', file: 'person', at: answer.at, text: messageOf(item, answer, index + 1) }]))
   const { withdrawal } = item
   const withdrawn: Told[] = withdrawal === undefined || withdrawal.by.session === session ? [] : [{ kind: 'note', file: 'item', at: withdrawal.at, text: `${senderOf(withdrawal.by, item.project, senders).title} withdrew "${current(item).title}" (${item.id}) from the inbox: ${withdrawal.words}` }]
   return [...revised, ...answered, ...withdrawn].sort((a, b) => a.at.localeCompare(b.at))
@@ -55,6 +59,11 @@ export function advanced(heard: Heard, id: string, told: Told, start: string): H
   return { ...heard, [id]: { ...marks, [told.file]: mark.at === told.at ? { at: told.at, count: mark.count + 1 } : { at: told.at, count: 1 } } }
 }
 
-export function unfollowedWarning(item: Item): { readonly message: string; readonly description: string } {
+export function isUnheard(item: Summary, person: Person, senders: Senders): boolean {
+  const sent = person.answers.at(-1)
+  return sent !== undefined && !isPlainDone(sent) && !isFollowed(item, senders)
+}
+
+export function unfollowedWarning(item: Summary): { readonly message: string; readonly description: string } {
   return { message: `No running session follows "${current(item).title}"`, description: 'Your answer is kept with the item, and reaches its session when it resumes.' }
 }

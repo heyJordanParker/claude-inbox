@@ -1,6 +1,6 @@
 import { fs, messageOf, Note, process, Prompt, sessions, type Mod } from '../node_modules/@cmodjs/core/mod.js'
 import { advanced, marksIn, unheard, type Told } from './items/heard.js'
-import { deliveriesOf, isInScope, isUnnamed, narrowestScope, personOf, repositoryOf, scopes, senderOf, sendersFor, sendersOf, type Author, type Deliveries, type Item, type Person, type Scope, type Sender } from './items/item.js'
+import { deliveriesOf, isInScope, isUnnamed, narrowestScope, ofKind, personOf, queue, repositoryOf, scopes, senderOf, sendersFor, sendersOf, type Author, type Deliveries, type Item, type Person, type Scope, type Sender, type Summary } from './items/item.js'
 import { createItem, deliveryStart, readerOf, storeIn, updateItem, type Check, type Reader, type Reread, type Store } from './items/store.js'
 import type { InboxState } from './state.js'
 
@@ -26,7 +26,7 @@ export function rememberPerson(mod: Mod<InboxState>, id: string, person: Person)
   mod.state.memory.person = { ...mod.state.memory.person, [id]: person }
 }
 
-export function personIn(mod: Mod<InboxState>, item: Item): Person {
+export function personIn(mod: Mod<InboxState>, item: Summary): Person {
   return personOf(mod.state.memory.person, item)
 }
 
@@ -94,6 +94,15 @@ export function scoped(mod: Mod<InboxState>, scope: Scope = mod.state.session.sc
   const { id, project } = sessions.current
   const repositories = mod.state.memory.repositories
   return mod.state.memory.items.filter((item) => isInScope(item, scope, { session: id, repository: repositories[project] ?? project }, repositories))
+}
+
+export function listedIn(mod: Mod<InboxState>): Item[] {
+  return ofKind(queue(scoped(mod), mod.state.memory.person, mod.state.memory.senders, deliveriesIn(mod)), mod.state.session.kind)
+}
+
+export function shownIn(mod: Mod<InboxState>): Item | undefined {
+  const { viewing } = mod.state.session
+  return viewing === null ? undefined : scoped(mod).find((item) => item.id === viewing)
 }
 
 export function widenTo(mod: Mod<InboxState>, id: string): void {

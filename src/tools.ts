@@ -2,7 +2,7 @@ import { messageOf, process, sessions, type Job, type Mod, type Tool } from '../
 import { tool } from '../node_modules/@cmodjs/core/jobs/tool.js'
 import { author, change, create, find, learnSenders, load, personIn, senderIn, storeOf } from './actions.js'
 import { completeContent, type DeclaredContent } from './completion.js'
-import { byQueue, closingOf, current, deliveriesOf, isUnnamed, isWithAgent, revisionNumber, revisionOf, statusOf, type Deliveries, type Item, type Kind } from './items/item.js'
+import { byNewest, closingOf, current, deliveriesOf, isUnnamed, isWithAgent, kinds, revisionNumber, revisionOf, statusOf, type Deliveries, type Item, type Kind } from './items/item.js'
 import { format } from './items/markdown.js'
 import { itemPath, type Check } from './items/store.js'
 import { schemas } from './schemas.js'
@@ -11,8 +11,6 @@ import type { InboxState } from './state.js'
 type Input = Record<string, unknown>
 
 type Execute = (input: Input, mod: Mod<InboxState>) => unknown
-
-const kinds: readonly Kind[] = ['proposal', 'options', 'question', 'report']
 
 function linkOf(mod: Mod<InboxState>, item: Item): string {
   return `[${current(item).title}](file://${itemPath(storeOf(mod), item.id)})`
@@ -173,7 +171,7 @@ export function inboxTools(loaded: Promise<void>, shown: (mod: Mod<InboxState>, 
       if (id === undefined)
         return mod.state.memory.items
           .filter((item) => statusOf(item, personIn(mod, item)) === 'open' && deliveries[item.id] === undefined)
-          .sort(byQueue(mod.state.memory.person))
+          .sort(byNewest)
           .map((item) => summaryOf(mod, item, deliveries))
       const item = find(mod, id)
       const closings = [...personIn(mod, item).answers, ...(item.withdrawal === undefined ? [] : [item.withdrawal])].sort((a, b) => a.at.localeCompare(b.at))

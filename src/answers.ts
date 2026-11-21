@@ -1,8 +1,8 @@
-import type { Mod } from '../node_modules/@cmodjs/core/mod.js'
-import { deliveriesIn, find, rememberPerson, scoped, storeOf, widenTo } from './actions.js'
+import { messageOf, type Mod } from '../node_modules/@cmodjs/core/mod.js'
+import { find, listedIn, rememberPerson, shownIn, storeOf, widenTo } from './actions.js'
 import * as core from './items/answers.js'
-import { unfollowedWarning } from './items/heard.js'
-import { isFollowed, revisionOf, shownOf, type Item, type Note, type Person } from './items/item.js'
+import { isUnheard, unfollowedWarning } from './items/heard.js'
+import { nextAfter, revisionOf, type Item, type Kind, type Note, type Person, type Scope } from './items/item.js'
 import type { InboxState } from './state.js'
 
 const sending = new Set<string>()
@@ -11,13 +11,16 @@ export async function answer(mod: Mod<InboxState>, id: string, seen: number, giv
   if (sending.has(id)) return
   sending.add(id)
   try {
+    const item = find(mod, id)
+    const next = nextAfter(listedIn(mod), item)
     const person = await core.answer(storeOf(mod), id, seen, given)
     rememberPerson(mod, id, person)
-    mod.state.session.viewing = core.viewingAfterAnswer(given, id, mod.state.session.viewing)
     if (given.kind === 'correct') stopEditing(mod, id)
-    else forget(mod, id)
-    const item = find(mod, id)
-    if (isFollowed(item, mod.state.memory.senders)) return
+    else {
+      forget(mod, id)
+      if (mod.state.session.viewing === id) mod.state.session.viewing = next?.id ?? null
+    }
+    if (!isUnheard(item, person, mod.state.memory.senders)) return
     const { message, description } = unfollowedWarning(item)
     mod.toast.warning(message, { description })
   } catch (error) {
@@ -51,8 +54,8 @@ export async function markRead(mod: Mod<InboxState>, item: Item): Promise<void> 
   rememberPerson(mod, item.id, await core.markRead(storeOf(mod), item, revisionOf(item)))
 }
 
-export async function view(mod: Mod<InboxState>, id: string, onScreen: boolean): Promise<void> {
-  const left = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, deliveriesIn(mod), mod.state.session.viewing)
+export async function view(mod: Mod<InboxState>, id: string | null, onScreen: boolean): Promise<void> {
+  const left = shownIn(mod)
   mod.state.session.viewing = id
   if (left === undefined || left.id === id) return
   setEditing(mod, null)
@@ -60,14 +63,59 @@ export async function view(mod: Mod<InboxState>, id: string, onScreen: boolean):
   if (onScreen) await markRead(mod, left)
 }
 
+export function back(mod: Mod<InboxState>): Promise<void> {
+  return view(mod, null, true)
+}
+
 export async function follow(mod: Mod<InboxState>, id: string): Promise<void> {
   widenTo(mod, id)
   await view(mod, id, true)
 }
 
-export async function skip(mod: Mod<InboxState>, item: Item, seen: number, next: string): Promise<void> {
-  rememberPerson(mod, item.id, await core.skip(storeOf(mod), item, seen))
-  await view(mod, next, true)
+export function filterKind(mod: Mod<InboxState>, kind: Kind | null): void {
+  mod.state.session.kind = kind
+  mod.state.session.selected = []
+}
+
+export function filterScope(mod: Mod<InboxState>, scope: Scope): void {
+  mod.state.session.scope = scope
+  mod.state.session.selected = []
+}
+
+export function selectedIn(mod: Mod<InboxState>): Item[] {
+  const { selected } = mod.state.session
+  return listedIn(mod).filter((item) => selected.includes(item.id))
+}
+
+export function toggleSelected(mod: Mod<InboxState>, id: string): void {
+  const kept = selectedIn(mod).map((item) => item.id)
+  mod.state.session.selected = kept.includes(id) ? kept.filter((each) => each !== id) : [...kept, id]
+}
+
+export function selectAll(mod: Mod<InboxState>, isSelected: boolean): void {
+  mod.state.session.selected = isSelected ? listedIn(mod).map((item) => item.id) : []
+}
+
+export function clearSelected(mod: Mod<InboxState>): void {
+  mod.state.session.selected = []
+}
+
+async function eachSelected(mod: Mod<InboxState>, items: readonly Item[], change: (item: Item) => Promise<Person>): Promise<void> {
+  const changed = await Promise.allSettled(items.map(async (item) => rememberPerson(mod, item.id, await change(item))))
+  mod.state.session.selected = []
+  const failed = changed.flatMap((each): unknown[] => (each.status === 'rejected' ? [each.reason] : []))
+  const unexpected = failed.find((error) => !(error instanceof core.Moved))
+  if (unexpected !== undefined) throw unexpected
+  if (failed.length > 0) mod.toast.warning(failed.map(messageOf).join('\n'))
+}
+
+export function doneSelected(mod: Mod<InboxState>): Promise<void> {
+  const reports = selectedIn(mod).filter((item) => item.kind === 'report')
+  return eachSelected(mod, reports, (item) => core.answer(storeOf(mod), item.id, revisionOf(item), { kind: 'acknowledge' }))
+}
+
+export function readSelected(mod: Mod<InboxState>): Promise<void> {
+  return eachSelected(mod, selectedIn(mod), (item) => core.markRead(storeOf(mod), item, revisionOf(item)))
 }
 
 export function noteInputKey(key: string): string {
@@ -83,8 +131,8 @@ export function setEditing(mod: Mod<InboxState>, key: string | null): void {
 }
 
 export function isWriting(mod: Mod<InboxState>): boolean {
-  const { editing, typed, viewing } = mod.state.session
-  const shown = shownOf(scoped(mod), mod.state.memory.person, mod.state.memory.senders, deliveriesIn(mod), viewing)
+  const { editing, typed } = mod.state.session
+  const shown = shownIn(mod)
   return editing !== null || (shown !== undefined && (typed[answerInputKey(shown.id)] ?? '') !== '')
 }
 

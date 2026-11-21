@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { randomBytes } from 'node:crypto'
 import { renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import plugin from '../../.claude-plugin/plugin.json'
 import { repositoryOf } from '../../src/items/item.js'
@@ -12,7 +11,7 @@ const usage = 'Usage: inbox serve --data <folder>\n       inbox --version'
 
 function save(path: string, saved: Server): void {
   const partial = `${path}.${process.pid}.tmp`
-  writeFileSync(partial, `${JSON.stringify(saved)}\n`, { mode: 0o600 })
+  writeFileSync(partial, `${JSON.stringify(saved)}\n`)
   try {
     renameSync(partial, path)
   } catch (error) {
@@ -44,7 +43,6 @@ async function start(folder: string): Promise<Serving> {
   const saved = await savedServer(store)
   const options: Omit<Options, 'port'> = {
     store,
-    token: saved?.token ?? randomBytes(32).toString('base64url'),
     senders: sessionSenders,
     repositoryOf: (project) => repositoryOf(run, project, (line) => console.error(`inbox serve: ${line}`)),
   }
@@ -52,7 +50,7 @@ async function start(folder: string): Promise<Serving> {
     if (saved === undefined || !isPortTaken(error)) throw error
     return serve({ ...options, port: 0 })
   })
-  if (saved?.port !== started.port || saved.token !== options.token) save(serverPath(store), { port: started.port, token: options.token })
+  save(serverPath(store), { port: started.port })
   return started
 }
 

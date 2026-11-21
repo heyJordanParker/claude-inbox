@@ -1,8 +1,8 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
 import { join, sep } from 'node:path'
-import { answer, dropNote, markRead, Moved, NotOffered, setNote, skip, type Given } from '../../src/items/answers.js'
-import { isFollowed, isUnnamed, sendersFor, type Item, type Person, type Senders } from '../../src/items/item.js'
+import { answer, dropNote, markRead, Moved, NotOffered, setNote, type Given } from '../../src/items/answers.js'
+import { isUnheard } from '../../src/items/heard.js'
+import { isUnnamed, sendersFor, summaryOf, type Item, type Person, type Senders } from '../../src/items/item.js'
 import { itemOf, itemPath, readerOf, rereadMs, type Changed, type Store } from '../../src/items/store.js'
 import script from '../build/script.txt' with { type: 'file' }
 import shell from '../build/shell.txt' with { type: 'file' }
@@ -11,7 +11,6 @@ import style from '../build/style.txt' with { type: 'file' }
 export type Options = {
   readonly store: Store
   readonly port: number
-  readonly token: string
   readonly senders: () => Promise<Senders>
   readonly repositoryOf: (project: string) => Promise<string>
 }
@@ -25,11 +24,9 @@ const host = '127.0.0.1'
 
 const pollMs = 500
 
-const codeMs = 60_000
-
 const csp = "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
 
-const itemRoute = /^\/api\/items\/([a-z0-9-]+)\/(answer|notes|read|skip|file)$/
+const itemRoute = /^\/api\/items\/([a-z0-9-]+)(?:\/(answer|notes|read|file))?$/
 
 const assets: Readonly<Record<string, { readonly path: string; readonly type: string }>> = {
   '/app.js': { path: script, type: 'text/javascript;charset=utf-8' },
@@ -53,10 +50,6 @@ function buildOf(shellText: string): string {
   const build = /<meta name="inbox-build" content="([0-9a-f]+)" \/>/.exec(shellText)?.[1]
   if (build === undefined) throw new Error('The built shell names no build, so cli/build.ts did not write it.')
   return build
-}
-
-function digest(text: string): Buffer {
-  return createHash('sha256').update(text).digest()
 }
 
 function drawnPaths(value: unknown): string[] {
@@ -92,11 +85,10 @@ function givenOf(body: Readonly<Record<string, unknown>>): Given {
   return { kind: kind as Given['kind'],...(option === undefined ? {} : { option }), ...(words === undefined ? {} : { words }) }
 }
 
-export async function serve({ store, port, token, senders: listSenders, repositoryOf }: Options): Promise<Serving> {
+export async function serve({ store, port, senders: listSenders, repositoryOf }: Options): Promise<Serving> {
   const items = new Map<string, Item>()
   const person = new Map<string, Person>()
   const repositories = new Map<string, Promise<string>>()
-  const codes = new Map<string, number>()
   const streams = new Set<ReadableStreamDefaultController<string>>()
   const reader = readerOf(store)
   let lastChanged: string | undefined
@@ -104,7 +96,7 @@ export async function serve({ store, port, token, senders: listSenders, reposito
   let learning: Promise<void> | undefined
 
   const broadcast = (changed: Changed): void => {
-    const frame = `event: changed\ndata: ${JSON.stringify({ ...changed, senders })}\n\n`
+    const frame = `event: changed\ndata: ${JSON.stringify({ ...changed, items: changed.items.map(summaryOf), senders })}\n\n`
     for (const stream of streams) stream.enqueue(frame)
   }
 
@@ -147,30 +139,9 @@ export async function serve({ store, port, token, senders: listSenders, reposito
     return learned
   }
 
-  const hasToken = (request: Request): boolean => {
-    const given = /^Bearer (.+)$/.exec(request.headers.get('authorization') ?? '')?.[1]
-    return given !== undefined && timingSafeEqual(digest(given), digest(token))
-  }
-
   const found = async (id: string): Promise<Item> => {
     if (!(await store.disk.exists(itemPath(store, id)))) throw new Refusal(404, `The inbox has no item ${id}.`)
     return itemOf(store, id)
-  }
-
-  const trade = async (request: Request): Promise<Response> => {
-    const { code } = await bodyOf(request)
-    const expiresAt = typeof code === 'string' ? codes.get(code) : undefined
-    if (typeof code === 'string') codes.delete(code)
-    if (expiresAt === undefined || expiresAt <= Date.now()) throw new Refusal(403, 'This link was already used or has expired. Open the item again from the terminal.')
-    return json(200, { token })
-  }
-
-  const mint = (): Response => {
-    const now = Date.now()
-    for (const [code, expiresAt] of codes) if (expiresAt <= now) codes.delete(code)
-    const code = randomBytes(16).toString('base64url')
-    codes.set(code, now + codeMs)
-    return json(200, { code })
   }
 
   const events = async (request: Request, url: URL, server: Bun.Server<undefined>): Promise<Response> => {
@@ -182,7 +153,7 @@ export async function serve({ store, port, token, senders: listSenders, reposito
     const body = new ReadableStream<string>({
       start(controller) {
         opened = controller
-        controller.enqueue(`event: listed\ndata: ${JSON.stringify({ items: [...items.values()], person: Object.fromEntries(person), repositories, senders, build })}\n\n`)
+        controller.enqueue(`event: listed\ndata: ${JSON.stringify({ items: [...items.values()].map(summaryOf), person: Object.fromEntries(person), repositories, senders, build })}\n\n`)
         streams.add(controller)
       },
       cancel() {
@@ -205,13 +176,14 @@ export async function serve({ store, port, token, senders: listSenders, reposito
     return new Response(await readFile(path, 'utf8'), { headers: { 'content-type': 'text/plain;charset=utf-8', 'content-security-policy': csp } })
   }
 
-  const onItem = async (request: Request, url: URL, id: string, action: string): Promise<Response> => {
+  const onItem = async (request: Request, url: URL, id: string, action: string | undefined): Promise<Response> => {
     const item = await found(id)
+    if (action === undefined && request.method === 'GET') return json(200, item)
     if (action === 'file' && request.method === 'GET') return fileOf(item, url)
     if (action === 'answer' && request.method === 'POST') {
       const body = await bodyOf(request)
       const answered = await answer(store, id, seenOf(body), givenOf(body))
-      return json(200, { person: answered, isFollowed: isFollowed(item, senders) })
+      return json(200, { person: answered, isUnheard: isUnheard(item, answered, senders) })
     }
     if (action === 'notes' && (request.method === 'PUT' || request.method === 'DELETE')) {
       const { path, revision, words } = await bodyOf(request)
@@ -221,7 +193,6 @@ export async function serve({ store, port, token, senders: listSenders, reposito
       return json(200, { person: await setNote(store, item, path, revision, words) })
     }
     if (action === 'read' && request.method === 'POST') return json(200, { person: await markRead(store, item, seenOf(await bodyOf(request))) })
-    if (action === 'skip' && request.method === 'POST') return json(200, { person: await skip(store, item, seenOf(await bodyOf(request))) })
     throw new Refusal(405, `${request.method} ${url.pathname} is not an inbox route.`)
   }
 
@@ -238,13 +209,10 @@ export async function serve({ store, port, token, senders: listSenders, reposito
       if (request.method !== 'GET') throw new Refusal(405, `${request.method} ${pathname} is not an inbox route.`)
       return page(pathname)
     }
-    if (pathname === '/api/tokens' && request.method === 'POST') return trade(request)
-    if (!hasToken(request)) throw new Refusal(401, 'This request needs the inbox token.')
-    if (pathname === '/api/codes' && request.method === 'POST') return mint()
     if (pathname === '/api/events' && request.method === 'GET') return events(request, url, server)
     const matched = itemRoute.exec(pathname)
     const [, id, action] = matched ?? []
-    if (id !== undefined && action !== undefined) return onItem(request, url, id, action)
+    if (id !== undefined) return onItem(request, url, id, action)
     throw new Refusal(404, `${request.method} ${pathname} is not an inbox route.`)
   }
 
@@ -255,12 +223,7 @@ export async function serve({ store, port, token, senders: listSenders, reposito
     development: false,
     reusePort: false,
     async fetch(request, served) {
-      const address = `${host}:${served.port}`
-      const origin = request.headers.get('origin')
       const url = new URL(request.url)
-      if (request.headers.get('host') !== address) return json(403, { error: `This server answers only requests to ${address}.` })
-      if (origin !== null && origin !== `http://${address}`) return json(403, { error: `This server answers no page from ${origin}.` })
-      if (url.pathname === '/api/tokens' && origin === null) return json(403, { error: 'Trading a code for the token needs the Origin header.' })
       try {
         return await route(request, url, served)
       } catch (error) {

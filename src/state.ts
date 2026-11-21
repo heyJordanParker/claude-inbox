@@ -1,5 +1,5 @@
 import type { Heard } from './items/heard.js'
-import type { Item, PersonFiles, Scope, Senders } from './items/item.js'
+import type { Item, Kind, PersonFiles, Scope, Senders } from './items/item.js'
 
 export type FileView = { readonly status: 'read'; readonly text: string; readonly isDiff: boolean } | { readonly status: 'failed'; readonly error: string }
 
@@ -14,7 +14,9 @@ export type InboxState = {
   }
   session: {
     scope: Scope
+    kind: Kind | null
     viewing: string | null
+    selected: readonly string[]
     folds: Readonly<Record<string, boolean>>
     editing: string | null
     typed: Readonly<Record<string, string>>
@@ -26,5 +28,5 @@ export type InboxState = {
 
 export const initialState: InboxState = {
   memory: { items: [], person: {}, repositories: {}, senders: {} },
-  session: { scope: 'session', viewing: null, folds: {}, editing: null, typed: {}, isArchiveOpen: false, file: null, heard: {} },
+  session: { scope: 'session', kind: null, viewing: null, selected: [], folds: {}, editing: null, typed: {}, isArchiveOpen: false, file: null, heard: {} },
 }
