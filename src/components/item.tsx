@@ -1,12 +1,11 @@
-import type { RenderChildren, RenderElement } from 'claude-code'
-import type { Mod, Page } from '../../node_modules/@cmodjs/core/mod.js'
+import type { Mod, View } from '../../node_modules/@cmodjs/core/mod.js'
 import { Box, Button, Input, Markdown, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
 import { Tooltip } from '../../node_modules/@cmodjs/core/ui/components.js'
 import { deliveriesIn, personIn, senderIn } from '../actions.js'
-import { answer, answerInputKey, dropNote, follow, noteInputKey, setEditing, setNote, setTyped, skip } from '../answers.js'
+import { answer, answerInputKey, dropNote, follow, noteInputKey, setEditing, setNote, setTyped, view } from '../answers.js'
 import { actionsOf, type Action } from '../items/answers.js'
 import { kindOf } from '../items/drawings.js'
-import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, noteOn, notePlaceholder, plural, precedentLine, revisionOf, sentCorrections, threadOf, threadStatusOf, unseenOf, wording, type Drawing, type Idea, type Item, type Person, type Sender, type Unseen } from '../items/item.js'
+import { closedLine, closingLines, closingOf, current, earlierNotes, isWithAgent, kindName, needsAnswer, noteOn, notePlaceholder, plural, precedentLine, revisionOf, sentCorrections, threadOf, threadStatusOf, wording, type Drawing, type Idea, type Item, type Person, type Sender, type Summary, type Unseen } from '../items/item.js'
 import { childrenOf, drawingPath, evidenceOf, evidencePath, foldedLine, foldKey, folds, headingOf, ideaPath, ideasOf, isDrawingUnchanged, isLeftOpen, isUnfolded, readingOf, rootGroups, summaryOf, titleOf, unseenAt, withRemoved, type Node, type Part, type Reading } from '../items/tree.js'
 import type { InboxState } from '../state.js'
 import { chip } from './chip.js'
@@ -15,7 +14,7 @@ import { DrawingView, drawingSubject, type OpenFile } from './drawing.js'
 type Shared = Reading & {
   readonly mod: Mod<InboxState>
   readonly onFile: OpenFile
-  readonly focus: Page['focus']
+  readonly focus: View['focus']
   readonly drawingColumns: number
 }
 
@@ -37,7 +36,7 @@ async function toggleNote(shared: Shared, key: string): Promise<void> {
   if (opened !== null) await shared.focus(noteInputKey(opened))
 }
 
-function NoteReveal({ shared, noteKey, right = 0 }: { readonly shared: Shared; readonly noteKey: string; readonly right?: number }): RenderElement {
+function NoteReveal({ shared, noteKey, right = 0 }: { readonly shared: Shared; readonly noteKey: string; readonly right?: number }): JSX.Element {
   return (
     <Box position="absolute" right={right} top={0} display="none" hover={{ display: 'flex' }}>
       <Button plain key={`note:${noteKey}`} onPress={() => toggleNote(shared, noteKey)}>
@@ -47,7 +46,7 @@ function NoteReveal({ shared, noteKey, right = 0 }: { readonly shared: Shared; r
   )
 }
 
-function Note({ shared, path, label = wording.note }: { readonly shared: Shared; readonly path: string; readonly label?: string }): RenderElement | null {
+function Note({ shared, path, label = wording.note }: { readonly shared: Shared; readonly path: string; readonly label?: string }): JSX.Element | null {
   const { mod, item, person } = shared
   const key = keyOf(item, path)
   const note = noteOn(item, person, path)
@@ -80,7 +79,7 @@ function Note({ shared, path, label = wording.note }: { readonly shared: Shared;
 
 const sessionColors: Readonly<Record<string, string>> = { red: '#ff6b80', blue: '#5f87ff', green: '#5fd787', yellow: '#ffd75f', purple: '#af87ff', orange: '#ff8700', pink: '#ff87d7', cyan: '#5fd7d7' }
 
-export function sender({ title, color: named }: Sender): RenderElement {
+export function sender({ title, color: named }: Sender): JSX.Element {
   const color = named === undefined ? undefined : sessionColors[named]
   return (
     <Text bold {...(color === undefined ? {} : { color })}>
@@ -130,7 +129,7 @@ function listItems(lines: readonly string[]): ListItem[] {
   return items.map(({ depth, marker, lines: words }) => ({ depth, marker, text: words.join('\n') }))
 }
 
-function Prose({ text, partKey }: { readonly text: string; readonly partKey: string }): RenderElement {
+function Prose({ text, partKey }: { readonly text: string; readonly partKey: string }): JSX.Element {
   return (
     <Box flexDirection="column">
       {segmentsOf(text.trim()).map((segment, n) => (
@@ -153,16 +152,16 @@ function Prose({ text, partKey }: { readonly text: string; readonly partKey: str
   )
 }
 
-function Badge({ unseen }: { readonly unseen: Unseen | 'changed inside' }): RenderElement {
+function Badge({ unseen }: { readonly unseen: Unseen | 'changed inside' }): JSX.Element {
   return chip(unseen, 'unseen')
 }
 
-function Mark({ shared, path }: { readonly shared: Shared; readonly path: string }): RenderElement | null {
+function Mark({ shared, path }: { readonly shared: Shared; readonly path: string }): JSX.Element | null {
   const unseen = unseenAt(shared, path)
   return unseen === undefined ? null : <Badge unseen={unseen} />
 }
 
-function RemovedPart({ part, space }: { readonly part: Part; readonly space: number }): RenderElement {
+function RemovedPart({ part, space }: { readonly part: Part; readonly space: number }): JSX.Element {
   return (
     <Box flexDirection="column" marginTop={space} paddingRight={noteRoom}>
       <Box columnGap={1} flexWrap="wrap">
@@ -176,11 +175,11 @@ function RemovedPart({ part, space }: { readonly part: Part; readonly space: num
   )
 }
 
-function removedSpaced(space: number): (part: Part) => RenderElement {
+function removedSpaced(space: number): (part: Part) => JSX.Element {
   return (part) => <RemovedPart part={part} space={space} />
 }
 
-function Was({ shared, path }: { readonly shared: Shared; readonly path: string }): RenderElement | null {
+function Was({ shared, path }: { readonly shared: Shared; readonly path: string }): JSX.Element | null {
   const was = shared.revised.was.get(path)
   return was === undefined ? null : (
     <Text dimColor strikethrough wrap="wrap">
@@ -199,7 +198,7 @@ type HeadingProps = {
   readonly status?: string | undefined
 }
 
-function Heading({ shared, path, label, title, summary, precedent, status }: HeadingProps): RenderElement {
+function Heading({ shared, path, label, title, summary, precedent, status }: HeadingProps): JSX.Element {
   const { item } = shared
   const key = keyOf(item, path)
   const isOpen = isUnfolded(shared, path)
@@ -237,7 +236,7 @@ function Heading({ shared, path, label, title, summary, precedent, status }: Hea
   )
 }
 
-function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; readonly path: string; readonly shared: Shared }): RenderElement {
+function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; readonly path: string; readonly shared: Shared }): JSX.Element {
   const { item } = shared
   const key = keyOf(item, path)
   const keyPrefix = `drawing:${key}`
@@ -265,7 +264,7 @@ function DrawingPart({ drawing, path, shared }: { readonly drawing: Drawing; rea
   )
 }
 
-function Evidence({ node, shared }: { readonly node: Node; readonly shared: Shared }): RenderElement | null {
+function Evidence({ node, shared }: { readonly node: Node; readonly shared: Shared }): JSX.Element | null {
   const checks = evidenceOf(node)
   if (checks.length === 0) return null
   const { item } = shared
@@ -291,7 +290,7 @@ function Evidence({ node, shared }: { readonly node: Node; readonly shared: Shar
   )
 }
 
-function IdeaView({ idea, path, shared }: { readonly idea: Idea; readonly path: string; readonly shared: Shared }): RenderElement {
+function IdeaView({ idea, path, shared }: { readonly idea: Idea; readonly path: string; readonly shared: Shared }): JSX.Element {
   const key = keyOf(shared.item, path)
   return (
     <Box flexDirection="column">
@@ -307,7 +306,7 @@ function IdeaView({ idea, path, shared }: { readonly idea: Idea; readonly path: 
   )
 }
 
-function Ideas({ ideas, parent, shared }: { readonly ideas: readonly Idea[]; readonly parent: string; readonly shared: Shared }): RenderElement {
+function Ideas({ ideas, parent, shared }: { readonly ideas: readonly Idea[]; readonly parent: string; readonly shared: Shared }): JSX.Element {
   return (
     <Box flexDirection="column" gap={1}>
       {withRemoved(
@@ -322,7 +321,7 @@ function Ideas({ ideas, parent, shared }: { readonly ideas: readonly Idea[]; rea
 
 const partSpace = 2
 
-function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shared }): RenderElement {
+function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shared }): JSX.Element {
   const precedent = node.type === 'solution' ? node.solution.precedent : undefined
   const status = isLeftOpen(node) ? wording.leftOpen : undefined
   const children = childrenOf(node)
@@ -346,7 +345,7 @@ function NodeView({ node, shared }: { readonly node: Node; readonly shared: Shar
   )
 }
 
-function Section({ label, mark, children }: { readonly label: string; readonly mark?: RenderChildren; readonly children: RenderChildren }): RenderElement {
+function Section({ label, mark, children }: { readonly label: string; readonly mark?: JSX.Children; readonly children: JSX.Children }): JSX.Element {
   return (
     <Box flexDirection="column">
       <Box columnGap={1} flexWrap="wrap">
@@ -358,7 +357,7 @@ function Section({ label, mark, children }: { readonly label: string; readonly m
   )
 }
 
-function Labeled({ shared, path, label, text, status }: { readonly shared: Shared; readonly path: string; readonly label: string; readonly text: string; readonly status?: RenderElement }): RenderElement {
+function Labeled({ shared, path, label, text, status }: { readonly shared: Shared; readonly path: string; readonly label: string; readonly text: string; readonly status?: JSX.Element }): JSX.Element {
   const key = keyOf(shared.item, path)
   return (
     <Box key={`lead:${key}`} flexDirection="column" paddingRight={noteRoom}>
@@ -372,7 +371,7 @@ function Labeled({ shared, path, label, text, status }: { readonly shared: Share
   )
 }
 
-function Lead({ shared }: { readonly shared: Shared }): RenderElement {
+function Lead({ shared }: { readonly shared: Shared }): JSX.Element {
   const content = current(shared.item)
   if (content.kind === 'question') return <Labeled shared={shared} path="why" label={wording.whyItMatters} text={content.why} />
   if (content.kind !== 'options') return <Labeled shared={shared} path="goal" label={wording.goal} text={content.goal} />
@@ -391,7 +390,7 @@ function Lead({ shared }: { readonly shared: Shared }): RenderElement {
   )
 }
 
-function Sent({ item, person }: { readonly item: Item; readonly person: Person }): RenderElement | null {
+function Sent({ item, person }: { readonly item: Item; readonly person: Person }): JSX.Element | null {
   if (!isWithAgent(item, person)) return null
   return (
     <Section label={wording.sent}>
@@ -405,7 +404,7 @@ function Sent({ item, person }: { readonly item: Item; readonly person: Person }
   )
 }
 
-function Closing({ mod, item, person }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person }): RenderElement | null {
+function Closing({ mod, item, person }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person }): JSX.Element | null {
   const closing = closingOf(item, person)
   if (closing === undefined) return null
   return (
@@ -417,7 +416,7 @@ function Closing({ mod, item, person }: { readonly mod: Mod<InboxState>; readonl
   )
 }
 
-function ThreadLink({ mod, from, to }: { readonly mod: Mod<InboxState>; readonly from: Item; readonly to: Item }): RenderElement {
+function ThreadLink({ mod, from, to }: { readonly mod: Mod<InboxState>; readonly from: Item; readonly to: Summary }): JSX.Element {
   const status = threadStatusOf(to, personIn(mod, to), mod.state.memory.senders, deliveriesIn(mod))
   return (
     <Box key={`thread-area:${from.id}:${to.id}`}>
@@ -432,7 +431,7 @@ function ThreadLink({ mod, from, to }: { readonly mod: Mod<InboxState>; readonly
   )
 }
 
-function Thread({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: Item }): RenderElement | null {
+function Thread({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: Item }): JSX.Element | null {
   const { deliveredBy, delivers } = threadOf(item, mod.state.memory.items, deliveriesIn(mod))
   if (deliveredBy === undefined && delivers.length === 0) return null
   return (
@@ -453,7 +452,7 @@ function Thread({ mod, item }: { readonly mod: Mod<InboxState>; readonly item: I
   )
 }
 
-function EarlierNotes({ mod, item, person }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person }): RenderElement | null {
+function EarlierNotes({ mod, item, person }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly person: Person }): JSX.Element | null {
   const earlier = earlierNotes(item, person)
   if (earlier.length === 0) return null
   return (
@@ -471,7 +470,7 @@ function EarlierNotes({ mod, item, person }: { readonly mod: Mod<InboxState>; re
   )
 }
 
-function actionButton(action: Action, onPress: () => void | Promise<void>): RenderElement {
+function actionButton(action: Action, onPress: () => void | Promise<void>): JSX.Element {
   return (
     <Button key={action.id} {...(action.hotkey === undefined ? {} : { hotkey: action.hotkey })} onPress={onPress}>
       <Text {...(action.isPrimary ? { color: 'claude' } : {})}>{action.label}</Text>
@@ -480,7 +479,7 @@ function actionButton(action: Action, onPress: () => void | Promise<void>): Rend
   )
 }
 
-function Actions({ shared, next }: { readonly shared: Shared; readonly next: Item | undefined }): RenderElement {
+function Actions({ shared, next }: { readonly shared: Shared; readonly next: Item | undefined }): JSX.Element {
   const { mod, item, person } = shared
   const seen = revisionOf(item)
   const commentKey = keyOf(item, '')
@@ -492,8 +491,8 @@ function Actions({ shared, next }: { readonly shared: Shared; readonly next: Ite
     const { does } = action
     if (does === 'answer') return null
     if (does === 'comment') return actionButton(action, () => toggleNote(shared, commentKey))
-    if (does !== 'skip') return actionButton(action, () => answer(mod, item.id, seen, does))
-    return next === undefined ? null : <Tooltip text={`${kindName(next)}: ${current(next).title}`}>{actionButton(action, () => skip(mod, item, seen, next.id))}</Tooltip>
+    if (does !== 'next') return actionButton(action, () => answer(mod, item.id, seen, does))
+    return next === undefined ? null : <Tooltip text={`${kindName(next)}: ${current(next).title}`}>{actionButton(action, () => view(mod, next.id, true))}</Tooltip>
   })
   return (
     <Box flexDirection="column" gap={1}>
@@ -514,7 +513,7 @@ function Actions({ shared, next }: { readonly shared: Shared; readonly next: Ite
   )
 }
 
-export function Bar({ children }: { readonly children: RenderChildren }): RenderElement {
+export function Bar({ children }: { readonly children: JSX.Children }): JSX.Element {
   return (
     <Box flexDirection="column" gap={1} backgroundColor="subtle" paddingX={2} paddingY={1}>
       {children}
@@ -522,7 +521,7 @@ export function Bar({ children }: { readonly children: RenderChildren }): Render
   )
 }
 
-export function Card({ children }: { readonly children: RenderChildren }): RenderElement {
+export function Card({ children }: { readonly children: JSX.Children }): JSX.Element {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="inactive" width="100%">
       {children}
@@ -530,30 +529,22 @@ export function Card({ children }: { readonly children: RenderChildren }): Rende
   )
 }
 
-export function ItemView({ mod, item, place, columns, onFile, onBrowser, focus, next }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly place: string | undefined; readonly columns: number; readonly onFile: OpenFile; readonly onBrowser: () => Promise<void>; readonly focus: Page['focus']; readonly next: Item | undefined }): RenderElement {
+export function ItemView({ mod, item, place, columns, onFile, focus, next }: { readonly mod: Mod<InboxState>; readonly item: Item; readonly place: string | undefined; readonly columns: number; readonly onFile: OpenFile; readonly focus: View['focus']; readonly next: Item | undefined }): JSX.Element {
   const content = current(item)
   const person = personIn(mod, item)
   const shared: Shared = { ...readingOf(item, person, mod.state.session.folds), mod, onFile, focus, drawingColumns: columns - frameColumns }
-  const unseen = unseenOf(item, person)
   const itemKey = keyOf(item, '')
   return (
     <Card>
       <Box key={`card:${itemKey}`} flexDirection="column" gap={1} backgroundColor="subtle" paddingX={2} paddingY={1}>
-        <Box columnGap={2}>
-          <Text wrap="wrap">
-            {chip(kindName(item), 'label')}
-            {unseen === undefined ? null : <Text> <Badge unseen={unseen} /></Text>}
-            {' from '}
-            {sender(senderIn(mod, item, item.origin))}
-            {place === undefined ? null : ` · ${place}`}
+        <Text wrap="wrap">
+          <Text bold {...(needsAnswer(item) ? { color: 'claude' } : { dimColor: true })}>
+            {kindName(item)}
           </Text>
-          <Box flexShrink={0}>
-            <Button key="browser" hotkey="o" onPress={() => void onBrowser()}>
-              <Text color="suggestion">Open in browser</Text>
-              <Text dimColor>{'  o'}</Text>
-            </Button>
-          </Box>
-        </Box>
+          <Text dimColor>{' from '}</Text>
+          {sender(senderIn(mod, item, item.origin))}
+          {place === undefined ? null : <Text dimColor>{` · ${place}`}</Text>}
+        </Text>
         <Box flexDirection="column">
           <Text bold wrap="wrap">
             {content.title}

@@ -1,9 +1,9 @@
 import { expect, setSystemTime, test } from 'bun:test'
 import { readdirSync, readFileSync } from 'node:fs'
-import { actionsOf, answer, dropNote, markRead, Moved, NotOffered, setNote, skip, viewingAfterAnswer } from '../src/items/answers.js'
+import { actionsOf, answer, dropNote, markRead, Moved, NotOffered, setNote, viewingAfterAnswer } from '../src/items/answers.js'
 import { changeCounts, diagramKindOf, diffOf, drawingLabel, kindOf, statsOf, treeOf } from '../src/items/drawings.js'
 import { advanced, marksIn, unheard } from '../src/items/heard.js'
-import { ago, archive, cardStatusOf, cardTime, closingLines, closingOf, deliveriesOf, isArchived, isFollowed, narrowestScope, personOf, positionLine, queue, repositoryOf, scopes, shownOf, statusOf, threadLine, threadOf, type CodeDiff, type Content, type Item, type Note, type Person, type Run, type Scope, type Senders } from '../src/items/item.js'
+import { ago, archive, cardStatusOf, cardTime, closingLines, closingOf, deliveriesOf, isArchived, isFollowed, isUnread, narrowestScope, personOf, positionLine, queue, repositoryOf, scopes, shownOf, statusOf, threadLine, threadOf, unseenOf, type CodeDiff, type Content, type Item, type Note, type Person, type Run, type Scope, type Senders } from '../src/items/item.js'
 import { format, parsePerson, personMarkdown } from '../src/items/markdown.js'
 import { createItem, itemPath, personPath, readerOf, readItems, readPerson, storeIn, updateItem, type Disk } from '../src/items/store.js'
 import { foldKey, folds, isChanged, isUnchanged, opensAt, rootsOf, summaryOf, unrevised, type Revised } from '../src/items/tree.js'
@@ -132,7 +132,7 @@ test('an open item is in the list while any of its sessions runs, so it comes ba
 
   expect(queue([item], {}, running, {})).toEqual([item])
   expect(archive([item], {}, running, {})).toEqual([])
-  expect(cardStatusOf(item, nobody(item), running, {})).toEqual({ word: 'new', tone: 'unseen' })
+  expect([cardStatusOf(item, nobody(item), running, {}), isUnread(item, nobody(item))]).toEqual([undefined, true])
   expect(queue([followed], {}, { ...stopped, reviewer: { title: 'review', isRunning: true } }, {})).toEqual([followed])
 })
 
@@ -153,18 +153,15 @@ test('an item with requested changes is in the list, not the Archive, marked cha
   expect(cardStatusOf(item, personOf(person, item), running, {})).toEqual({ word: 'changes requested', tone: 'requested' })
 })
 
-test('the item shown by default is the first in the list that needs the person, past one waiting on requested changes and one in the Archive', () => {
-  const requested = itemOf(proposal, 'requested')
-  const ended = { ...itemOf(question, 'ended'), origin: { session: 'ended' }, subscribers: [{ session: 'ended', since: '2026-10-22T10:00:00.000Z' }] }
-  const fresh = itemOf(question, 'fresh')
-  const person = {
-    requested: { ...nobody(requested), queuedAt: '2026-10-22T10:00:00.000Z', answers: [{ kind: 'correct' as const, revision: 0, at: '2026-10-22T10:10:00.000Z', corrections: [note('p0', 'Say more')] }] },
-    ended: { ...nobody(ended), queuedAt: '2026-10-22T10:01:00.000Z' },
-    fresh: { ...nobody(fresh), queuedAt: '2026-10-22T10:02:00.000Z' },
-  }
+test('the list is newest first, and the item the browser shows by default is the first in it that needs the person, past one waiting on requested changes and one in the Archive', () => {
+  const at = (item: Item, time: string): Item => ({ ...item, revisions: item.revisions.map((revision) => ({ ...revision, at: time })), updatedAt: time })
+  const requested = at(itemOf(proposal, 'requested'), '2026-10-22T10:00:00.000Z')
+  const ended = at({ ...itemOf(question, 'ended'), origin: { session: 'ended' }, subscribers: [{ session: 'ended', since: '2026-10-22T10:00:00.000Z' }] }, '2026-10-22T10:01:00.000Z')
+  const fresh = at(itemOf(question, 'fresh'), '2026-10-22T10:02:00.000Z')
+  const person = { requested: { ...nobody(requested), answers: [{ kind: 'correct' as const, revision: 0, at: '2026-10-22T10:10:00.000Z', corrections: [note('p0', 'Say more')] }] } }
   const senders = { ...running, ended: { title: 'ended', isRunning: false } }
 
-  expect(queue([requested, ended, fresh], person, senders, {}).map((item) => item.id)).toEqual(['requested', 'fresh'])
+  expect(queue([requested, ended, fresh], person, senders, {}).map((item) => item.id)).toEqual(['fresh', 'requested'])
   expect(shownOf([requested, ended, fresh], person, senders, {}, null)?.id).toBe('fresh')
   expect(shownOf([requested, ended], person, senders, {}, null)?.id).toBe('requested')
   expect(shownOf([ended], person, senders, {}, null)).toBeUndefined()
@@ -209,7 +206,7 @@ test('an item the person answered keeps the answer as its mark after a report de
 })
 
 test('no file in src/items imports @cmodjs/core, so a program outside Claude Code runs the same core', () => {
-  const files = readdirSync(core)
+  const files = readdirSync(core).filter((name) => name.endsWith('.ts'))
 
   expect(files).toContain('store.ts')
   expect(files.filter((name) => readFileSync(`${core}${name}`, 'utf8').includes('@cmodjs/core'))).toEqual([])
@@ -316,7 +313,7 @@ test('a reread of person files reads only the one a view wrote, and the item cha
 test('a new item never takes the id of a person file whose item file is gone, so it starts with no old answer', async () => {
   const disk = memoryDisk()
   const store = storeIn('/data', disk)
-  await disk.write(personPath(store, 'do-we-want-courses'), personMarkdown({ notes: [], answers: [{ kind: 'reject', revision: 0, at: '2026-10-22T10:10:00.000Z' }], lastRead: 0, queuedAt: '2026-10-22T10:00:00.000Z' }))
+  await disk.write(personPath(store, 'do-we-want-courses'), personMarkdown({ notes: [], answers: [{ kind: 'reject', revision: 0, at: '2026-10-22T10:10:00.000Z' }], lastRead: 0 }))
 
   const item = await createItem(store, question.title, (id) => itemOf(question, id))
 
@@ -329,14 +326,13 @@ test('an update to an id the store does not hold is refused', async () => {
   await expect(updateItem(store, 'gone', (fresh) => fresh)).rejects.toThrow('The inbox has nothing with the id gone.')
 })
 
-test('a note save, an answer, a read mark, and Next → never change the item file', async () => {
+test('a note save, an answer, and a read mark never change the item file', async () => {
   const { disk, store, item } = await filed(proposal)
   const before = await disk.read(itemPath(store, item.id))
 
   await setNote(store, item, 'p0', 0, 'Name it')
   await dropNote(store, item, 'p0', 0)
   await markRead(store, item, 0)
-  await skip(store, item, 0)
   await answer(store, item.id, 0, { kind: 'approve' })
 
   expect(await disk.read(itemPath(store, item.id))).toBe(before)
@@ -446,7 +442,7 @@ test('a rejection closes only the revision it answered, so the next revision is 
   expect(cardStatusOf(item, rejected, running, {})).toEqual({ word: 'rejected', tone: 'archived' })
   expect(statusOf(revised, kept)).toBe('open')
   expect(queue([revised], person, running, {})).toEqual([revised])
-  expect(cardStatusOf(revised, kept, running, {})).toEqual({ word: 'changed', tone: 'unseen' })
+  expect([cardStatusOf(revised, kept, running, {}), unseenOf(revised, kept)]).toEqual([undefined, 'changed'])
   expect(kept.answers.map(({ kind, revision }) => ({ kind, revision }))).toEqual([{ kind: 'reject', revision: 0 }])
   expect(cardStatusOf(revised, await answer(store, item.id, 1, { kind: 'reject' }), running, {})).toEqual({ word: 'rejected', tone: 'archived' })
 })
@@ -500,19 +496,13 @@ test('a note written on a revision the item moved past is refused as moved, and 
   expect(await disk.exists(personPath(store, item.id))).toBe(false)
 })
 
-test('reading an item marks the revision the person saw, a second read writes nothing, and Next → also puts it behind the rest of the queue', async () => {
+test('reading an item marks the revision the person saw, and a second read writes nothing', async () => {
   const { disk, store, item } = await filed(proposal)
 
   expect((await markRead(store, item, 0)).lastRead).toBe(0)
   disk.writes.length = 0
   expect((await markRead(store, item, 0)).lastRead).toBe(0)
   expect(disk.writes).toEqual([])
-  try {
-    setSystemTime(new Date('2026-10-23T09:00:00.000Z'))
-    expect(await skip(store, item, 0)).toEqual(expect.objectContaining({ lastRead: 0, queuedAt: '2026-10-23T09:00:00.000Z' }))
-  } finally {
-    setSystemTime()
-  }
 })
 
 test('the footer offers each kind its answers, counts the notes, and shows Comment and Next → only when the view can use them', () => {
@@ -526,7 +516,7 @@ test('the footer offers each kind its answers, counts the notes, and shows Comme
   expect(rows(offered, nobody(offered), false, true)).toEqual([['approve', 'Approve', 'a', true], ['reject', 'Reject', 'x', false]])
   expect(rows(offered, withNotes(offered, [note('p0', 'Name it'), note('', 'Ship it')]))).toEqual([['request', 'Request changes (2)', 'r', true], ['approve', 'Approve with 2 notes', 'a', false], ['reject', 'Reject with 2 notes', 'x', false], next])
   expect(rows(offered, withNotes(offered, [note('', 'Written on revision 1', 1)]))).toContainEqual(comment)
-  expect(rows(itemOf(report, 'r'), nobody(itemOf(report, 'r')))).toEqual([['done', 'Done', 'd', true], comment, next])
+  expect(rows(itemOf(report, 'r'), nobody(itemOf(report, 'r')))).toEqual([['done', 'Done', 'e', true], comment, next])
   expect(rows(itemOf(question, 'q'), nobody(itemOf(question, 'q')))).toEqual([['answer', 'Answer', 'a', true], ['reject', 'Reject', 'x', false], comment, next])
 
   const picks = actionsOf(itemOf(options, 'o'), nobody(itemOf(options, 'o')), { hasNext: true, isCommenting: false })

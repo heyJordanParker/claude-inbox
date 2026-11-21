@@ -1,4 +1,3 @@
-import type { RenderElement } from 'claude-code'
 import { Box, Button, Code, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
 import { parseClassDiagram } from '../../node_modules/beautiful-mermaid/src/class/parser.ts'
 import type { ClassMember, RelationshipType } from '../../node_modules/beautiful-mermaid/src/class/types.ts'
@@ -13,7 +12,7 @@ export type OpenFile = (path: string, diff: string | undefined) => Promise<void>
 
 const changeColors: Readonly<Record<Change, string>> = { add: 'success', edit: 'text', remove: 'error' }
 
-function stats(diffs: readonly string[]): RenderElement[] {
+function stats(diffs: readonly string[]): JSX.Element[] {
   if (diffs.length === 0) return []
   const totals = statsOf(diffs)
   return [
@@ -25,11 +24,11 @@ function stats(diffs: readonly string[]): RenderElement[] {
   ]
 }
 
-function counted(changes: readonly (Change | undefined)[]): RenderElement[] {
+function counted(changes: readonly (Change | undefined)[]): JSX.Element[] {
   return changeCounts(changes).map(({ change, count }) => <Text color={changeColors[change]}>{`${count} ${changeWords[change]}`}</Text>)
 }
 
-function opener(key: string, path: string, onPress: () => Promise<void>): RenderElement {
+function opener(key: string, path: string, onPress: () => Promise<void>): JSX.Element {
   return (
     <Button plain key={key} onPress={onPress}>
       <Text color="suggestion">{path}</Text>
@@ -37,7 +36,7 @@ function opener(key: string, path: string, onPress: () => Promise<void>): Render
   )
 }
 
-export function drawingSubject(drawing: Drawing, project: string, keyPrefix: string, onFile: OpenFile): RenderElement[] {
+export function drawingSubject(drawing: Drawing, project: string, keyPrefix: string, onFile: OpenFile): JSX.Element[] {
   if (drawing.kind === 'files') {
     const diffs = drawing.files.flatMap((file) => (file.diff === undefined ? [] : [file.diff]))
     return [<Text>{projectName(project)}</Text>, ...counted(drawing.files.map((file) => file.change)), ...stats(diffs)]
@@ -161,7 +160,7 @@ function widthOf(text: string): number {
   return Math.max(0, ...text.split('\n').map((line) => [...line].length))
 }
 
-function Diagram({ mermaid, drawn, columns, keyPrefix }: { readonly mermaid: string; readonly drawn: string; readonly columns: number; readonly keyPrefix: string }): RenderElement {
+function Diagram({ mermaid, drawn, columns, keyPrefix }: { readonly mermaid: string; readonly drawn: string; readonly columns: number; readonly keyPrefix: string }): JSX.Element {
   if (widthOf(drawn) <= columns) return <Lines text={drawn} keyPrefix={keyPrefix} />
   return (
     <Box flexDirection="column" key={keyPrefix}>
@@ -177,7 +176,7 @@ function Diagram({ mermaid, drawn, columns, keyPrefix }: { readonly mermaid: str
   )
 }
 
-function Lines({ text, keyPrefix }: { readonly text: string; readonly keyPrefix: string }): RenderElement {
+function Lines({ text, keyPrefix }: { readonly text: string; readonly keyPrefix: string }): JSX.Element {
   return (
     <Box flexDirection="column" key={keyPrefix}>
       {text.split('\n').map((line, index) => (
@@ -191,7 +190,7 @@ function Lines({ text, keyPrefix }: { readonly text: string; readonly keyPrefix:
 
 const markColors: Readonly<Record<Mark, string | undefined>> = { '+': 'success', '-': 'error', ' ': undefined }
 
-function Marked({ rows, keyPrefix, onFile }: { readonly rows: readonly TreeRow[]; readonly keyPrefix: string; readonly onFile: OpenFile }): RenderElement {
+function Marked({ rows, keyPrefix, onFile }: { readonly rows: readonly TreeRow[]; readonly keyPrefix: string; readonly onFile: OpenFile }): JSX.Element {
   return (
     <Box flexDirection="column" key={keyPrefix}>
       {rows.map(({ mark, line, path, diff }, index) => {
@@ -213,7 +212,7 @@ function Marked({ rows, keyPrefix, onFile }: { readonly rows: readonly TreeRow[]
   )
 }
 
-export function DrawingView({ drawing, columns, keyPrefix, onFile }: { readonly drawing: Drawing; readonly columns: number; readonly keyPrefix: string; readonly onFile: OpenFile }): RenderElement {
+export function DrawingView({ drawing, columns, keyPrefix, onFile }: { readonly drawing: Drawing; readonly columns: number; readonly keyPrefix: string; readonly onFile: OpenFile }): JSX.Element {
   if (drawing.kind === 'files' || drawing.kind === 'api') return <Marked rows={treeOf(drawing)} keyPrefix={keyPrefix} onFile={onFile} />
   if (drawing.kind === 'diff') return <Code key={keyPrefix} source={diffOf(drawing)} path={drawing.path} format="diff" />
   if (drawing.kind === 'table') return <Code key={keyPrefix} source={diffOf(drawing)} language="typescript" format="diff" />

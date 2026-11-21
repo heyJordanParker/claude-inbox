@@ -155,7 +155,7 @@ function answerText(answer: Answer): string[] {
 }
 
 export function personMarkdown(person: Person): string {
-  return documentText({ lastRead: revisionNumber(person.lastRead), queuedAt: person.queuedAt }, [...person.answers.flatMap(answerText), ...person.notes.flatMap((note) => noteText(note, 2, 'note'))])
+  return documentText({ lastRead: revisionNumber(person.lastRead) }, [...person.answers.flatMap(answerText), ...person.notes.flatMap((note) => noteText(note, 2, 'note'))])
 }
 
 function documentOf(text: string, what: string): { readonly fields: Fields; readonly body: string } {
@@ -493,5 +493,5 @@ export function parsePerson(id: string, text: string): Person {
     })
     index += count
   }
-  return { notes, answers, lastRead: field<number>(fields, 'lastRead', what, isCount) - 1, queuedAt: field<string>(fields, 'queuedAt', what, isText) }
+  return { notes, answers, lastRead: field<number>(fields, 'lastRead', what, isCount) - 1 }
 }

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import type { HookStream, ProcessRunResult, ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
+import type { ProcessRunResult, Subprocess } from '../node_modules/@cmodjs/core/mod.js'
 import { testMod } from '../node_modules/@cmodjs/core/testing.js'
 import { answer, setNote } from '../src/items/answers.js'
 import { current, type Content, type Item } from '../src/items/item.js'
@@ -172,11 +172,12 @@ function tested(rulebook: (stdin: string | undefined) => Promise<ProcessRunResul
   const mod = testMod(inbox, { projectRoot: '/work' })
   mod.fakes.process.run = async (argv, init) => (argv[0] === 'rulebook' ? rulebook(init?.stdin) : run({}))
   mod.fakes.process.spawn = () => {
-    async function* written(): AsyncGenerator<ProcessSpawnChunk, ProcessSpawnResult> {
-      yield { stream: 'stdout', text: '127.0.0.1:4800\n' }
-      return await new Promise<ProcessSpawnResult>(() => undefined)
+    async function* written() {
+      yield { stream: 'stdout' as const, text: '127.0.0.1:4800\n' }
+      return await new Promise<never>(() => undefined)
     }
-    return Object.assign(written(), { result: new Promise<ProcessSpawnResult>(() => undefined) }) as HookStream<ProcessSpawnChunk, ProcessSpawnResult>
+    const spawned: Subprocess = Object.assign(written(), { result: new Promise<never>(() => undefined) })
+    return spawned
   }
   return mod
 }

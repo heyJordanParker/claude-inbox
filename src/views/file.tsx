@@ -1,9 +1,9 @@
-import { fs, messageOf, type Mod, type Page, type PageInit } from '../../node_modules/@cmodjs/core/mod.js'
+import { fs, messageOf, type Mod, type View, type ViewInit } from '../../node_modules/@cmodjs/core/mod.js'
 import { Box, Code, Text } from '../../node_modules/@cmodjs/core/ui/elements.js'
 import { whereLine } from '../items/item.js'
 import type { FileView, InboxState } from '../state.js'
 
-export const filePage: PageInit<InboxState> = {
+export const fileView: ViewInit<InboxState> = {
   id: 'file',
   title: 'File',
   render: (mod) => {
@@ -31,7 +31,7 @@ async function viewOf(project: string, path: string, diff: string | undefined): 
   }
 }
 
-export async function showFile(mod: Mod<InboxState>, page: Page, project: string, path: string, diff: string | undefined): Promise<void> {
+export async function showFile(mod: Mod<InboxState>, shownIn: View, project: string, path: string, diff: string | undefined): Promise<void> {
   mod.state.session.file = { project, path, view: await viewOf(project, path, diff) }
-  await page.open({ focus: true })
+  await shownIn.open({ focus: true })
 }

@@ -1,4 +1,3 @@
-import type { RenderElement } from 'claude-code'
 import type { StyleProps } from '../node_modules/@cmodjs/core/mod.js'
 import { Markdown } from '../node_modules/@cmodjs/core/ui/elements.js'
 import type { List, Paragraph } from '../node_modules/@cmodjs/core/ui/markdown.js'
@@ -12,7 +11,7 @@ export function idOfLink(href: string, items: string): string {
   return href.slice(`file://${items}/`.length, -'.md'.length)
 }
 
-export function LinkedBlock({ props, items, onOpen }: { readonly props: StyleProps<typeof Paragraph> | StyleProps<typeof List>; readonly items: string; readonly onOpen: (id: string) => void }): RenderElement {
+export function LinkedBlock({ props, items, onOpen }: { readonly props: StyleProps<typeof Paragraph> | StyleProps<typeof List>; readonly items: string; readonly onOpen: (id: string) => void }): JSX.Element {
   const links = itemLinks(props.source, items)
   if (links.length === 0) return <props.Default />
   return <Markdown key={`links:${props.id ?? ''}:${props.source}`} text={props.source} pressableLinks={links} onLinkPress={({ href }) => onOpen(idOfLink(href, items))} />

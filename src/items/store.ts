@@ -32,7 +32,7 @@ export function storeIn(dataFolder: string, disk: Disk): Store {
   return { folder: dataFolder, items: `${dataFolder}/items`, revisions: `${dataFolder}/revisions`, person: `${dataFolder}/person`, changed: `${dataFolder}/changed`, deliveringSince: `${dataFolder}/delivering-since`, disk }
 }
 
-export type Server = { readonly port: number; readonly token: string }
+export type Server = { readonly port: number }
 
 export function serverPath(store: Store): string {
   return `${store.folder}/server.json`
@@ -40,8 +40,8 @@ export function serverPath(store: Store): string {
 
 export async function savedServer(store: Store): Promise<Server | undefined> {
   const saved = (await storedIn(store, serverPath(store))) ?? {}
-  const { port, token } = saved
-  return typeof port === 'number' && Number.isInteger(port) && port > 0 && port < 65_536 && typeof token === 'string' && token !== '' ? { port, token } : undefined
+  const { port } = saved
+  return typeof port === 'number' && Number.isInteger(port) && port > 0 && port < 65_536 ? { port } : undefined
 }
 
 export async function deliveryStart(store: Store): Promise<string> {
