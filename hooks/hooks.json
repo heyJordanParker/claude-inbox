@@ -1,6 +1,0 @@
-{
-  "description": "inbox hooks module",
-  "modules": [
-    "./register.ts"
-  ]
-}
