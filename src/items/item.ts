@@ -312,11 +312,15 @@ export const kinds: readonly Kind[] = ['proposal', 'options', 'question', 'repor
 
 export const kindTabNames: Readonly<Record<Kind, string>> = { proposal: 'Proposals', options: 'Options', question: 'Questions', report: 'Reports' }
 
-export function ago(at: string, now: number): string {
-  const minutes = Math.max(0, Math.round((now - Date.parse(at)) / 60_000))
-  if (minutes < 60) return `${minutes}m ago`
+export function elapsed(since: string, now: number): string {
+  const minutes = Math.max(0, Math.round((now - Date.parse(since)) / 60_000))
+  if (minutes < 60) return `${minutes}m`
   const hours = Math.round(minutes / 60)
-  return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`
+  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`
+}
+
+export function ago(at: string, now: number): string {
+  return `${elapsed(at, now)} ago`
 }
 
 export function plural(count: number, word: string): string {

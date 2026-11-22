@@ -1,5 +1,6 @@
 import { readFile, realpath } from 'node:fs/promises'
 import { join, sep } from 'node:path'
+import type { Provided } from '../../node_modules/@cmodjs/core/mod.js'
 import { answer, dropNote, markRead, Moved, NotOffered, setNote, type Given } from '../../src/items/answers.js'
 import { isUnheard } from '../../src/items/heard.js'
 import { isUnnamed, sendersFor, summaryOf, type Item, type Person, type Senders } from '../../src/items/item.js'
@@ -7,12 +8,14 @@ import { itemOf, itemPath, readerOf, rereadMs, type Changed, type Store } from '
 import script from '../build/script.txt' with { type: 'file' }
 import shell from '../build/shell.txt' with { type: 'file' }
 import style from '../build/style.txt' with { type: 'file' }
+import { goalsReaderOf, type Change, type Provide } from './goals.js'
 
 export type Options = {
   readonly store: Store
   readonly port: number
   readonly senders: () => Promise<Senders>
   readonly repositoryOf: (project: string) => Promise<string>
+  readonly provide?: Provide
 }
 
 export type Serving = {
@@ -20,7 +23,14 @@ export type Serving = {
   stop(): Promise<void>
 }
 
+type Tailnet = {
+  readonly name: string
+  readonly login: string
+}
+
 const host = '127.0.0.1'
+
+const localNames = new Set([host, 'localhost'])
 
 const pollMs = 500
 
@@ -44,6 +54,19 @@ class Refusal extends Error {
 
 function json(status: number, body: unknown): Response {
   return Response.json(body, { status, headers: { 'content-security-policy': csp } })
+}
+
+function tailnetOf({ CMOD_TAILNET_NAME: name, CMOD_TAILNET_LOGIN: login }: NodeJS.ProcessEnv): Tailnet | undefined {
+  if (name === undefined && login === undefined) return undefined
+  if (name === undefined || name === '' || login === undefined || login === '') throw new Error('CMOD_TAILNET_NAME and CMOD_TAILNET_LOGIN must be set together, as cmod sets them for a web app.')
+  return { name: name.toLowerCase(), login }
+}
+
+function refusalOf(request: Request, tailnet: Tailnet | undefined): string | undefined {
+  const name = /^([^:]+)(?::\d+)?$/.exec(request.headers.get('host') ?? '')?.[1]?.toLowerCase()
+  if (name !== undefined && localNames.has(name)) return request.headers.has('x-forwarded-for') ? 'The inbox answers a forwarded request only under its tailnet name.' : undefined
+  if (name !== undefined && name === tailnet?.name) return request.headers.get('tailscale-user-login') === tailnet.login ? undefined : "The inbox answers only its owner's Tailscale login."
+  return name === undefined ? 'The inbox answers no request without a Host name.' : `The inbox does not answer under the name ${name}.`
 }
 
 function buildOf(shellText: string): string {
@@ -85,12 +108,15 @@ function givenOf(body: Readonly<Record<string, unknown>>): Given {
   return { kind: kind as Given['kind'],...(option === undefined ? {} : { option }), ...(words === undefined ? {} : { words }) }
 }
 
-export async function serve({ store, port, senders: listSenders, repositoryOf }: Options): Promise<Serving> {
+export async function serve({ store, port, senders: listSenders, repositoryOf, provide }: Options): Promise<Serving> {
+  const tailnet = tailnetOf(process.env)
   const items = new Map<string, Item>()
   const person = new Map<string, Person>()
   const repositories = new Map<string, Promise<string>>()
   const streams = new Set<ReadableStreamDefaultController<string>>()
   const reader = readerOf(store)
+  const goals = goalsReaderOf(store)
+  let provided: Provided<'inbox/Goals'> | undefined
   let lastChanged: string | undefined
   let senders: Senders = {}
   let learning: Promise<void> | undefined
@@ -124,10 +150,14 @@ export async function serve({ store, port, senders: listSenders, repositoryOf }:
     if (isUnnamed([...items.values()], senders)) void learnSenders()
   }
 
+  const tellChanges = async (changes: Promise<readonly Change[]>): Promise<void> => {
+    for (const change of await changes) provided?.tell('Change', change)
+  }
+
   const poll = async (): Promise<void> => {
     const text = (await store.disk.exists(store.changed)) ? await store.disk.read(store.changed) : ''
-    if (text === lastChanged) return
-    await reread()
+    if (text === lastChanged) return tellChanges(goals.readProgress())
+    await Promise.all([reread(), tellChanges(goals.read())])
     lastChanged = text
   }
 
@@ -223,6 +253,8 @@ export async function serve({ store, port, senders: listSenders, repositoryOf }:
     development: false,
     reusePort: false,
     async fetch(request, served) {
+      const refused = refusalOf(request, tailnet)
+      if (refused !== undefined) return json(403, { error: refused })
       const url = new URL(request.url)
       try {
         return await route(request, url, served)
@@ -240,12 +272,20 @@ export async function serve({ store, port, senders: listSenders, repositoryOf }:
   }, pollMs)
   const rereading = setInterval(() => {
     reread().catch((error: unknown) => console.error('inbox serve could not reread the store:', error))
+    void tellChanges(goals.read())
     void learnSenders()
   }, rereadMs)
+  provide?.(goals.methods).then(
+    (given) => {
+      provided = given
+    },
+    (error: unknown) => console.error('inbox serve could not provide inbox/Goals, so no other mod hears a goals change:', error),
+  )
 
   return {
     port: server.port ?? port,
     async stop() {
+      provided?.remove()
       clearInterval(polling)
       clearInterval(rereading)
       for (const stream of streams) stream.close()

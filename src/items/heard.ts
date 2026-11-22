@@ -6,7 +6,7 @@ type Marks = { readonly item: Mark; readonly person: Mark }
 
 export type Heard = Readonly<Record<string, Marks | Mark>>
 
-export type Told = { readonly kind: 'prompt' | 'note'; readonly file: keyof Marks; readonly at: string; readonly text: string }
+export type Told = { readonly kind: 'prompt' | 'note'; readonly file: keyof Marks; readonly at: string; readonly text: string; readonly answer?: { readonly id: string; readonly words: string } }
 
 export function marksIn(heard: Heard, id: string, start: string): Marks {
   const known = heard[id]
@@ -30,13 +30,23 @@ function messageOf(item: Item, answer: Answer, number: number): string {
   return [`Inbox: the user requested changes to ${named}:`, ...noteLines(answer), `Revise it with the inbox's revise tool, which keeps the item open for the user.`].join('\n')
 }
 
+function answerWords(item: Item, answer: Answer, number: number): Told['answer'] {
+  const words = [answer.words, ...(answer.corrections ?? []).map((each) => each.words)].filter((each) => each !== undefined && each.trim() !== '').join('\n')
+  return words === '' ? undefined : { id: `${item.id}#${number}`, words }
+}
+
 export function isPlainDone(answer: Answer): boolean {
   return answer.kind === 'acknowledge' && answer.words === undefined && (answer.corrections ?? []).length === 0
 }
 
-function toldOf(item: Item, person: Person, session: string, senders: Senders): Told[] {
+function toldOf(item: Item, person: Person, session: string, senders: Senders, isFiling: boolean): Told[] {
   const revised = item.revisions.flatMap((revision, index): Told[] => (index === 0 || revision.session === session ? [] : [{ kind: 'note', file: 'item', at: revision.at, text: `${senderOf(revision, item.project, senders).title} revised "${revision.content.title}" (${item.id}) in the inbox.` }]))
-  const answered = person.answers.flatMap((answer, index): Told[] => (isPlainDone(answer) ? [] : [{ kind: 'prompt', file: 'person', at: answer.at, text: messageOf(item, answer, index + 1) }]))
+  const answered = person.answers.flatMap((answer, index): Told[] => {
+    if (isPlainDone(answer)) return []
+    const words = isFiling ? answerWords(item, answer, index + 1) : undefined
+    const text = [messageOf(item, answer, index + 1), ...(words === undefined ? [] : [`The user's words in this answer wait to be filed. Call mcp__inbox__file with prompt ${words.id}.`])].join('\n')
+    return [{ kind: 'prompt', file: 'person', at: answer.at, text, ...(words === undefined ? {} : { answer: words }) }]
+  })
   const { withdrawal } = item
   const withdrawn: Told[] = withdrawal === undefined || withdrawal.by.session === session ? [] : [{ kind: 'note', file: 'item', at: withdrawal.at, text: `${senderOf(withdrawal.by, item.project, senders).title} withdrew "${current(item).title}" (${item.id}) from the inbox: ${withdrawal.words}` }]
   return [...revised, ...answered, ...withdrawn].sort((a, b) => a.at.localeCompare(b.at))
@@ -46,10 +56,10 @@ function isAfter(mark: Mark, told: Told, earlier: readonly Told[]): boolean {
   return told.at > mark.at || (told.at === mark.at && earlier.filter((each) => each.file === told.file && each.at === mark.at).length >= mark.count)
 }
 
-export function unheard(item: Item, person: Person, session: string, marks: Marks, senders: Senders): Told[] {
+export function unheard(item: Item, person: Person, session: string, marks: Marks, senders: Senders, isFiling: boolean): Told[] {
   const subscriber = item.subscribers.find((each) => each.session === session)
   if (subscriber === undefined) return []
-  const told = toldOf(item, person, session, senders).filter((each) => each.at >= subscriber.since)
+  const told = toldOf(item, person, session, senders, isFiling).filter((each) => each.at >= subscriber.since)
   return told.filter((each, index) => isAfter(marks[each.file], each, told.slice(0, index)))
 }
 

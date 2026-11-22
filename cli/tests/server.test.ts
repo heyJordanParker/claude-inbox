@@ -1,10 +1,16 @@
 import { afterEach, expect, jest, setSystemTime, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { rename } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import Markdown from 'react-markdown'
+import type { InterfaceMethods } from '../../node_modules/@cmodjs/core/mod.js'
+import type { Connection } from '../../node_modules/@cmodjs/core/rpc.js'
+import { emptyGoals } from '../../src/goals/goal.js'
+import { setProgress } from '../../src/goals/progress.js'
+import { updateGoals, type Lock } from '../../src/goals/store.js'
 import { setNote } from '../../src/items/answers.js'
 import type { Content, Item, Person, PersonFiles, Senders } from '../../src/items/item.js'
 import { format, parsePerson } from '../../src/items/markdown.js'
@@ -13,6 +19,7 @@ import plugin from '../../.claude-plugin/plugin.json'
 import { buildApp, built } from '../build.ts'
 import { disk } from '../src/disk.js'
 import type { Listed } from '../src/app/api.js'
+import { relayGoalChanges, type Change, type Provide } from '../src/goals.js'
 import type { Serving } from '../src/server.js'
 
 await buildApp()
@@ -20,6 +27,8 @@ await buildApp()
 const { serve } = await import('../src/server.js')
 
 const main = new URL('../src/main.ts', import.meta.url).pathname
+
+const outsideCmod = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('CMOD_')))
 
 const origin = { session: 'planner' }
 
@@ -61,7 +70,7 @@ function itemOf(content: Content, project: string, id: string): Item {
 
 let titles: Senders = { planner: { title: 'schema planning', color: 'purple' } }
 
-async function started({ senders = async () => titles, served = disk }: { readonly senders?: () => Promise<Senders>; readonly served?: Disk } = {}) {
+async function started({ senders = async () => titles, served = disk, provide }: { readonly senders?: () => Promise<Senders>; readonly served?: Disk; readonly provide?: Provide } = {}) {
   const root = folder()
   const project = join(root, 'project')
   mkdirSync(join(project, 'src'), { recursive: true })
@@ -71,7 +80,7 @@ async function started({ senders = async () => titles, served = disk }: { readon
   symlinkSync(join(root, 'secret.txt'), join(project, 'src/escape.ts'))
   const store = storeIn(join(root, 'data'), disk)
   const item = await createItem(store, proposal.title, (id) => itemOf(proposal, project, id))
-  const serving: Serving = await serve({ store: storeIn(store.folder, served), port: 0, senders, repositoryOf: async (each) => `${each}/.git` })
+  const serving: Serving = await serve({ store: storeIn(store.folder, served), port: 0, senders, repositoryOf: async (each) => `${each}/.git`, ...(provide === undefined ? {} : { provide }) })
   cleanups.push(() => serving.stop())
   const address = `127.0.0.1:${serving.port}`
   const call = (path: string, init: { readonly method?: string; readonly body?: unknown; readonly headers?: Record<string, string> } = {}) =>
@@ -121,8 +130,8 @@ async function firstLine(stream: ReadableStream<Uint8Array>): Promise<string> {
   return text.split('\n')[0] ?? ''
 }
 
-async function program(data: string) {
-  const child = Bun.spawn([process.execPath, main, 'serve', '--data', data], { stdout: 'pipe', stderr: 'pipe' })
+async function program(data: string, environment: Record<string, string> = {}) {
+  const child = Bun.spawn([process.execPath, main, 'serve', '--data', data], { stdout: 'pipe', stderr: 'pipe', env: { ...outsideCmod, ...environment } })
   cleanups.push(async () => {
     child.kill()
     await child.exited
@@ -130,15 +139,118 @@ async function program(data: string) {
   return { child, address: await firstLine(child.stdout) }
 }
 
-test('the inbox answers under any name a proxy such as tailscale serve gives it, with no sign-in', async () => {
-  const { item, store, call } = await started()
-  const proxied = { host: 'macbook.tailac0786.ts.net:8443', origin: 'https://macbook.tailac0786.ts.net:8443' }
+const tailnet = { CMOD_TAILNET_NAME: 'inbox.tail1.ts.net', CMOD_TAILNET_LOGIN: 'me@example.com' }
 
-  const shell = await call('/', { headers: proxied })
-  const marked = await call(`/api/items/${item.id}/read`, { method: 'POST', body: { seen: 0 }, headers: proxied })
+async function programWith(environment: Record<string, string>) {
+  const data = folder()
+  const store = storeIn(data, disk)
+  const item = await createItem(store, proposal.title, (id) => itemOf(proposal, data, id))
+  const { address } = await program(data, environment)
+  const ask = async (headers: Record<string, string>) => {
+    const shell = await fetch(`http://${address}/`, { headers })
+    const marked = await fetch(`http://${address}/api/items/${item.id}/read`, { method: 'POST', headers, body: JSON.stringify({ seen: 0 }) })
+    return { statuses: [shell.status, marked.status], body: (await marked.json()) as { readonly error?: string } }
+  }
+  const isRead = () => statSync(personPath(store, item.id), { throwIfNoEntry: false }) !== undefined
+  return { port: address.slice(address.indexOf(':') + 1), ask, isRead }
+}
 
-  expect([shell.status, marked.status]).toEqual([200, 200])
-  expect(personFile(store, item.id).lastRead).toBe(0)
+function goalsProvider() {
+  const told: (readonly [string, Change])[] = []
+  const methods = Promise.withResolvers<InterfaceMethods<'inbox/Goals'>>()
+  let heard = Promise.withResolvers<void>()
+  const provide: Provide = async (given) => {
+    methods.resolve(given)
+    const tell = (event: string, change: Change): void => {
+      told.push([event, change])
+      heard.resolve()
+      heard = Promise.withResolvers<void>()
+    }
+    return { tell, ask: async () => [], remove: () => undefined }
+  }
+  const toldUntil = async (count: number) => {
+    while (told.length < count) await heard.promise
+    return told
+  }
+  return { provide, methods: methods.promise, toldUntil }
+}
+
+async function servedGoals(store: Store, served: Disk = disk) {
+  const provider = goalsProvider()
+  const serving = await serve({ store: storeIn(store.folder, served), port: 0, senders: async () => titles, repositoryOf: async (each) => `${each}/.git`, provide: provider.provide })
+  cleanups.push(() => serving.stop())
+  return { methods: await provider.methods, toldUntil: provider.toldUntil }
+}
+
+test("a request through the tailnet under the computer's tailnet name answers when Tailscale names the owner's login", async () => {
+  const { ask, isRead } = await programWith(tailnet)
+
+  const { statuses } = await ask({ host: 'inbox.tail1.ts.net:8443', 'tailscale-user-login': 'me@example.com', 'x-forwarded-for': '100.64.0.2' })
+
+  expect(statuses).toEqual([200, 200])
+  expect(isRead()).toBe(true)
+})
+
+test("the tailnet name with another person's login, or with none, is refused with 403 and one line, and nothing is written", async () => {
+  const { ask, isRead } = await programWith(tailnet)
+
+  const stranger = await ask({ host: 'inbox.tail1.ts.net:8443', 'tailscale-user-login': 'someone@example.com', 'x-forwarded-for': '100.64.0.3' })
+  const tagged = await ask({ host: 'inbox.tail1.ts.net:8443', 'x-forwarded-for': '100.64.0.4' })
+
+  expect([stranger.statuses, tagged.statuses]).toEqual([
+    [403, 403],
+    [403, 403],
+  ])
+  expect([stranger.body.error, tagged.body.error]).toEqual(["The inbox answers only its owner's Tailscale login.", "The inbox answers only its owner's Tailscale login."])
+  expect(isRead()).toBe(false)
+})
+
+test('127.0.0.1 and localhost answer on any port with no login, as on a computer without Tailscale', async () => {
+  const { port, ask, isRead } = await programWith(tailnet)
+
+  const asked = await Promise.all([`127.0.0.1:${port}`, `localhost:${port}`, 'LOCALHOST'].map((host) => ask({ host })))
+
+  expect(asked.map((each) => each.statuses)).toEqual([
+    [200, 200],
+    [200, 200],
+    [200, 200],
+  ])
+  expect(isRead()).toBe(true)
+})
+
+test('any other Host is refused with 403, so a page on another site that renames itself to 127.0.0.1 reads nothing', async () => {
+  const { ask, isRead } = await programWith(tailnet)
+
+  const asked = await Promise.all(['example.com', 'example.com:8443', 'me@127.0.0.1', '[::1]'].map((host) => ask({ host })))
+
+  expect(asked.map((each) => [...each.statuses, each.body.error])).toEqual([
+    [403, 403, 'The inbox does not answer under the name example.com.'],
+    [403, 403, 'The inbox does not answer under the name example.com.'],
+    [403, 403, 'The inbox does not answer under the name me@127.0.0.1.'],
+    [403, 403, 'The inbox answers no request without a Host name.'],
+  ])
+  expect(isRead()).toBe(false)
+})
+
+test('a request Tailscale forwarded under the name 127.0.0.1 is refused, so a tailnet device cannot skip the login check', async () => {
+  const { port, ask, isRead } = await programWith(tailnet)
+
+  const forwarded = await ask({ host: `127.0.0.1:${port}`, 'x-forwarded-for': '100.64.0.3' })
+
+  expect([...forwarded.statuses, forwarded.body.error]).toEqual([403, 403, 'The inbox answers a forwarded request only under its tailnet name.'])
+  expect(isRead()).toBe(false)
+})
+
+test('without the tailnet variables only 127.0.0.1 and localhost answer', async () => {
+  const { port, ask } = await programWith({})
+
+  const tailnetHost = await ask({ host: 'inbox.tail1.ts.net:8443', 'tailscale-user-login': 'me@example.com', 'x-forwarded-for': '100.64.0.2' })
+  const local = await ask({ host: `127.0.0.1:${port}` })
+
+  expect([tailnetHost.statuses, local.statuses]).toEqual([
+    [403, 403],
+    [200, 200],
+  ])
 })
 
 test('one guarded handler serves the built shell at / and /items/:id, its script, and its styles, under the contract CSP', async () => {
@@ -561,11 +673,118 @@ test('inbox serve moves to a free port when another app holds the saved one, and
 test('inbox serve that cannot start ends its output with one line naming why, which cmod shows as the reason the program stopped', async () => {
   const data = folder()
   mkdirSync(join(data, 'server.json'))
-  const child = Bun.spawn([process.execPath, main, 'serve', '--data', data], { stdout: 'pipe', stderr: 'pipe' })
+  const child = Bun.spawn([process.execPath, main, 'serve', '--data', data], { stdout: 'pipe', stderr: 'pipe', env: outsideCmod })
   const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
 
   expect(exitCode).toBe(1)
   expect(stderr.trim().split('\n').at(-1)).toMatch(/^inbox serve could not start: EISDIR/)
+})
+
+const unlocked: Lock = { makeFolder: async () => undefined, take: async () => true, heldSince: async () => undefined, tokens: async () => [], remove: async () => true, wait: async () => undefined }
+
+test("inbox/Goals answers goals('s1') with the goals file and the progress written for s1, and sessions() lists s1", async () => {
+  const store = storeIn(folder(), disk)
+  const goals = await updateGoals(store, unlocked, 's1', () => ({ ...emptyGoals('s1', '/work'), requirements: [{ id: 'r1', capability: 'The person reads every goal', line: 'Show the goals', quotes: [] }] }), [])
+  const progress = await setProgress(store, rename, 's1', [{ kind: 'note', text: 'Tests run' }])
+
+  const { methods } = await servedGoals(store)
+
+  expect([await methods.goals('s1'), await methods.sessions()]).toEqual([{ goals, progress }, ['s1']])
+})
+
+test("a goals write tells Change with part 'goals' once goals() reads the new file, and a progress write tells part 'progress'", async () => {
+  const store = storeIn(folder(), disk)
+  const { methods, toldUntil } = await servedGoals(store)
+
+  const goals = await updateGoals(store, unlocked, 's1', () => emptyGoals('s1', '/work'), [])
+  const toldGoals = [...(await toldUntil(1))]
+  const read = await methods.goals('s1')
+  await setProgress(store, rename, 's1', [{ kind: 'note', text: 'Tests run' }])
+
+  expect(toldGoals).toEqual([['Change', { session: 's1', part: 'goals' }]])
+  expect(read.goals).toEqual(goals)
+  expect(await toldUntil(2)).toEqual([
+    ['Change', { session: 's1', part: 'goals' }],
+    ['Change', { session: 's1', part: 'progress' }],
+  ])
+})
+
+test("a progress write leaves no changed mark, and the next poll still tells Change with part 'progress'", async () => {
+  const store = storeIn(folder(), disk)
+  const { methods, toldUntil } = await servedGoals(store)
+
+  const progress = await setProgress(store, rename, 's1', [{ kind: 'note', text: 'Tests run' }])
+
+  expect(await toldUntil(1)).toEqual([['Change', { session: 's1', part: 'progress' }]])
+  expect([(await methods.goals('s1')).progress, statSync(store.changed, { throwIfNoEntry: false })]).toEqual([progress, undefined])
+})
+
+test('two sessions’ goals files written before one poll tell a Change for each, though changed names only the last', async () => {
+  const store = storeIn(folder(), disk)
+  let gate: Promise<void> = Promise.resolve()
+  const held: Disk = { ...disk, read: async (path) => (path === store.changed ? gate.then(() => disk.read(path)) : disk.read(path)) }
+  const { toldUntil } = await servedGoals(store, held)
+  const opened = Promise.withResolvers<void>()
+  gate = opened.promise
+
+  await updateGoals(store, unlocked, 's1', () => emptyGoals('s1', '/work'), [])
+  await updateGoals(store, unlocked, 's2', () => emptyGoals('s2', '/work'), [])
+  opened.resolve()
+
+  expect((await toldUntil(2)).map(([event, change]) => `${event} ${change.session} ${change.part}`).sort()).toEqual(['Change s1 goals', 'Change s2 goals'])
+})
+
+test('a goals folder that cannot be read still lets the server start, and inbox/Goals lists no session from it', async () => {
+  const data = folder()
+  writeFileSync(join(data, 'goals'), 'a file where the goals folder belongs')
+
+  const { methods } = await servedGoals(storeIn(data, disk))
+
+  expect(await methods.sessions()).toEqual([])
+})
+
+test('an item write tells no Change, because inbox/Goals carries only goals and progress', async () => {
+  const provider = goalsProvider()
+  const { store, project, call } = await started({ provide: provider.provide })
+  const heard = await watched(call)
+
+  await createItem(store, 'Do we want courses?', (id) => itemOf({ kind: 'question', title: 'Do we want courses?', why: 'It decides the schema' }, project, id))
+  await heard('Do we want courses?')
+  await updateGoals(store, unlocked, 's1', () => emptyGoals('s1', '/work'), [])
+
+  expect(await provider.toldUntil(1)).toEqual([['Change', { session: 's1', part: 'goals' }]])
+})
+
+test("a cmod/Sessions Change with part 'goal' that the program hears tells inbox/Goals Change with part 'goal', and no other part tells one", () => {
+  const listened: string[] = []
+  const told: (readonly [string, Change])[] = []
+  let hear: (payload: unknown) => void = () => undefined
+  let isListening = true
+  const connection: Pick<Connection, 'listen'> = {
+    listen: (name, event, listener) => {
+      listened.push(`${name} ${event}`)
+      hear = (payload) => void listener(payload, new AbortController().signal)
+      return { remove: () => void (isListening = false) }
+    },
+  }
+  const relayed = relayGoalChanges(connection, { tell: (event: string, change: Change) => void told.push([event, change]), ask: async () => [], remove: () => undefined })
+
+  hear({ session: 's2', part: 'running' })
+  hear({ session: 's2', part: 'goal' })
+  relayed.remove()
+
+  expect([listened, told, isListening]).toEqual([['cmod/Sessions Change'], [['Change', { session: 's2', part: 'goal' }]], false])
+})
+
+test('inbox serve with no CMOD_MOD still answers GET / on 127.0.0.1 and provides nothing', async () => {
+  const { child, address } = await program(folder())
+
+  const shell = await fetch(`http://${address}/`)
+  child.kill()
+  await child.exited
+
+  expect([address.startsWith('127.0.0.1:'), shell.status, await shell.text()]).toEqual([true, 200, readFileSync(join(built, 'shell.txt'), 'utf8')])
+  expect(await new Response(child.stderr).text()).not.toContain('inbox/Goals')
 })
 
 test('the browser draws raw HTML in an idea as text, since react-markdown with no plugins does, so a filed <script>, onerror, or onclick never runs', () => {

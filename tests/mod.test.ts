@@ -471,7 +471,7 @@ test('a comment written in the footer is a note on the whole item, pressing it e
   await mod.shown.view.press('approve')
   await tick()
 
-  expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user approved the proposal "Exhaustive match needs no default" (${item.id}), answer 1, with these notes:`, '- the whole item: "Ship it behind a flag first"', 'Apply them as you go.'].join('\n'))
+  expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user approved the proposal "Exhaustive match needs no default" (${item.id}), answer 1, with these notes:`, '- the whole item: "Ship it behind a flag first"', 'Apply them as you go.', `The user's words in this answer wait to be filed. Call mcp__inbox__file with prompt ${item.id}#1.`].join('\n'))
 })
 
 test('typed answer text goes when the page moves to another item or the answer is sent, and stays while a comment opens', async () => {
@@ -644,7 +644,7 @@ test('picking an option and answering a question each tell the agent which, a pl
   await mod.shown.view.input(`words:${commented.id}:`, 'Release it too')
   await mod.shown.view.press('done')
   await tick()
-  expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user marked the report "The inbox ships again" (${commented.id}), answer 1 done, with these notes:`, '- the whole item: "Release it too"', 'Apply them as you go.'].join('\n'))
+  expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user marked the report "The inbox ships again" (${commented.id}), answer 1 done, with these notes:`, '- the whole item: "Release it too"', 'Apply them as you go.', `The user's words in this answer wait to be filed. Call mcp__inbox__file with prompt ${commented.id}#1.`].join('\n'))
 })
 
 test('Next → marks the item read and opens the next one down the list, newest first, and it shows only while another item waits', async () => {
@@ -695,7 +695,7 @@ test('rejecting tells the agent what was rejected, with the notes when there are
   await note(mod, options, 'problem', 'Neither handles generics')
   await mod.shown.view.press('reject')
   await tick()
-  expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user rejected every option in "Pick how a match handles a missing case" (${options.id}), answer 1, with these notes:`, '- Problem: Defaults: "Neither handles generics"', 'Apply them as you go.', resubmit].join('\n'))
+  expect(mod.shown.prompts.at(-1)).toBe([`Inbox: the user rejected every option in "Pick how a match handles a missing case" (${options.id}), answer 1, with these notes:`, '- Problem: Defaults: "Neither handles generics"', 'Apply them as you go.', resubmit, `The user's words in this answer wait to be filed. Call mcp__inbox__file with prompt ${options.id}#1.`].join('\n'))
 
   const asked = await filed(mod, 'ask_question', { title: 'Do we want courses?', why: 'It decides the schema' })
   await mod.shown.view.press('reject')
@@ -1055,7 +1055,7 @@ test('an answer another writer stores arrives once at a subscriber, and never at
   await tick()
   await tick()
 
-  expect(mod.shown.prompts).toEqual(['Inbox: the user answered "Do we want courses?" (courses), answer 1: "Yes"'])
+  expect(mod.shown.prompts).toEqual(['Inbox: the user answered "Do we want courses?" (courses), answer 1: "Yes"\nThe user\'s words in this answer wait to be filed. Call mcp__inbox__file with prompt courses#1.'])
   expect(mod.shown.sent).toEqual([])
 })
 
@@ -1157,7 +1157,7 @@ test('the first start of this release writes delivering-since and sends no answe
   expect(mod.shown.prompts).toEqual([])
 })
 
-test('each session runs inbox serve on the data folder as a service of the computer, so one copy serves the browser whenever the person is logged in', async () => {
+test("each session runs inbox serve on the data folder as a service of the computer and a web app on the person's tailnet, so one copy serves the browser on every device whenever the person is logged in", async () => {
   const mod = tested()
   const spawned: (readonly string[])[] = []
   mod.fakes.process.spawn = (request) => {
@@ -1167,7 +1167,7 @@ test('each session runs inbox serve on the data folder as a service of the compu
   await mod.start()
   await mod.settle()
 
-  expect(spawned).toEqual([['/test/home/.local/share/cmod/programs/cmod', 'program', 'inbox', '--service', '--', 'inbox', 'serve', '--data', '/test/home/.local/share/cmod/data/inbox']])
+  expect(spawned).toEqual([['/test/home/.local/share/cmod/programs/cmod', 'program', 'inbox', '--web-app', '--service', '--', 'inbox', 'serve', '--data', '/test/home/.local/share/cmod/data/inbox']])
 })
 
 test('an item whose files were deleted drops out of memory and out of read', async () => {

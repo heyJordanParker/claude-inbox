@@ -8,8 +8,9 @@ The inbox mod holds every proposal, choice between options, product question, an
 - The inbox holds items of four kinds: a proposal, options, a question, and a report. `src/items/item.ts` holds their types, and `src/items/store.ts` the store.
 - `src/items/` is the core the terminal view and the web server share, `src/` the mod in each Claude Code session, and `cli/` the `inbox` program that serves the browser view.
 - An item's status is `open`, `answered`, or `withdrawn`: the person's answer or the agent's withdrawal, whichever came first. An open item is with an agent while a correction answers its current revision, so the agent's next revision ends the wait without any status change. A rejection closes only the revision it answered, so `revise` accepts a rejected item, and its next revision reopens it with the rejection kept in the person file.
+- Each session's requirements, in the person's exact words, and its task list live in one goals file, whose types and store are `src/goals/`. The session's goal text is cmod's, which the inbox reads and never copies.
 - A report is final: `revise` refuses it, and the next round of work is a new report.
 - An agent never writes a format. `src/schemas.ts` is the format: each tool's JSON Schema requires every field the person needs.
-- The person picks every key, so the `toggle` hotkey declares no default combo and starts unbound until the person binds it in Settings. It runs the same show-or-hide as `/inbox`.
+- The person picks every key, so the `toggle`, `goal`, and `tasks` hotkeys declare no default combo and start unbound until the person binds them in Settings. `toggle` runs the same show-or-hide as `/inbox`, and `goal` and `tasks` show or hide the Goal and Tasks views.
 - `rules/inbox.md` tells Claude to bring proposals through the inbox, and `skills/proposals/` how to write each kind.
 - Tests check what agents receive, what the inbox refuses, and the stored data. Each view's look is checked live, never by comparing drawn text.

@@ -615,14 +615,14 @@ test('two answers stored in one millisecond are both unheard, and the mark count
   const at = '2026-11-01T00:00:00.000Z'
   const person: Person = { ...nobody(item), answers: [{ kind: 'correct', corrections: [], revision: 0, at }, { kind: 'answer', words: 'Yes', revision: 0, at }] }
   const start = '2026-10-01T00:00:00.000Z'
-  const [first, second] = unheard(item, person, origin.session, marksIn({}, 'courses', start), {})
+  const [first, second] = unheard(item, person, origin.session, marksIn({}, 'courses', start), {}, true)
   const once = first === undefined ? {} : advanced({}, 'courses', first, start)
   const twice = second === undefined ? once : advanced(once, 'courses', second, start)
 
-  expect([first, second].map((each) => each?.text.endsWith('answer 2: "Yes"'))).toEqual([false, true])
-  expect(unheard(item, person, origin.session, marksIn(once, 'courses', start), {}).map((each) => each.text)).toEqual(['Inbox: the user answered "Do we want courses?" (courses), answer 2: "Yes"'])
-  expect(unheard(item, person, origin.session, marksIn(twice, 'courses', start), {})).toEqual([])
-  expect(unheard(item, person, 'bystander', marksIn({}, 'courses', start), {})).toEqual([])
+  expect([first, second].map((each) => each?.text.includes('answer 2: "Yes"'))).toEqual([false, true])
+  expect(unheard(item, person, origin.session, marksIn(once, 'courses', start), {}, true).map((each) => each.text)).toEqual(['Inbox: the user answered "Do we want courses?" (courses), answer 2: "Yes"\nThe user\'s words in this answer wait to be filed. Call mcp__inbox__file with prompt courses#2.'])
+  expect(unheard(item, person, origin.session, marksIn(twice, 'courses', start), {}, true)).toEqual([])
+  expect(unheard(item, person, 'bystander', marksIn({}, 'courses', start), {}, true)).toEqual([])
 })
 
 test('a project counts as the repository git names for it, or as itself when git names none or cannot run, which is logged', async () => {

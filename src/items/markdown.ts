@@ -7,7 +7,7 @@ function authorOf({ session, agent }: Author): Author {
   return { session, ...(agent === undefined ? {} : { agent }) }
 }
 
-type Fields = Readonly<Record<string, unknown>>
+export type Fields = Readonly<Record<string, unknown>>
 
 type Token = { readonly line: string } | { readonly level: number; readonly heading: string } | { readonly info: string; readonly code: string }
 
@@ -45,11 +45,11 @@ function frontMatter(fields: Fields): string {
   return ['---', ...Object.entries(fields).flatMap(([key, value]) => (value === undefined ? [] : [`${key}: ${JSON.stringify(value)}`])), '---'].join('\n')
 }
 
-function documentText(fields: Fields, blocks: readonly string[]): string {
+export function documentText(fields: Fields, blocks: readonly string[]): string {
   return `${frontMatter(fields)}\n${blocks.join('\n\n')}\n`
 }
 
-function heading(level: number, name: string, attributes?: Fields): string {
+export function heading(level: number, name: string, attributes?: Fields): string {
   return `${'#'.repeat(level)} ${name}${attributes === undefined ? '' : ` ${JSON.stringify(attributes)}`}`
 }
 
@@ -135,7 +135,7 @@ export function revisionMarkdown(item: Item, index: number): string {
   return revisionText(item, index, {})
 }
 
-function quoted(words: string): string {
+export function quoted(words: string): string {
   return words
     .split('\n')
     .map((line) => (line === '' ? '>' : `> ${line}`))
@@ -158,7 +158,7 @@ export function personMarkdown(person: Person): string {
   return documentText({ lastRead: revisionNumber(person.lastRead) }, [...person.answers.flatMap(answerText), ...person.notes.flatMap((note) => noteText(note, 2, 'note'))])
 }
 
-function documentOf(text: string, what: string): { readonly fields: Fields; readonly body: string } {
+export function documentOf(text: string, what: string): { readonly fields: Fields; readonly body: string } {
   const lines = text.split('\n')
   const end = lines.indexOf('---', 1)
   if (lines[0] !== '---' || end === -1) throw new Error(`${what} has no front matter between two --- lines.`)
@@ -185,19 +185,19 @@ function scalarOf(text: string): unknown {
   }
 }
 
-function field<Each>(fields: Fields, key: string, what: string, isValid: (value: unknown) => boolean): Each {
+export function field<Each>(fields: Fields, key: string, what: string, isValid: (value: unknown) => boolean): Each {
   const value = fields[key]
   if (!isValid(value)) throw new Error(`${what}'s front matter has no valid ${key}: ${JSON.stringify(value)}`)
   return value as Each
 }
 
-const isText = (value: unknown) => typeof value === 'string'
+export const isText = (value: unknown) => typeof value === 'string'
 
 const isCount = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0
 
-const isObject = (value: unknown) => typeof value === 'object' && value !== null && !Array.isArray(value)
+export const isObject = (value: unknown): value is Fields => typeof value === 'object' && value !== null && !Array.isArray(value)
 
-function tokensOf(text: string): Token[] {
+export function tokensOf(text: string): Token[] {
   const lines = text.split('\n')
   const tokens: Token[] = []
   for (let index = 0; index < lines.length; index += 1) {
@@ -241,7 +241,7 @@ function attributed(text: string): { readonly name: string; readonly attributes:
   return { name: text.slice(0, at), attributes: JSON.parse(text.slice(at + 1)) as Fields }
 }
 
-function sectionsOf(tokens: readonly Token[]): { readonly lead: readonly Token[]; readonly sections: readonly Section[] } {
+export function sectionsOf(tokens: readonly Token[]): { readonly lead: readonly Token[]; readonly sections: readonly Section[] } {
   const first = tokens.findIndex((token) => 'heading' in token)
   const sections: Section[] = []
   for (let index = first === -1 ? tokens.length : first; index < tokens.length; ) {
@@ -444,7 +444,7 @@ export function parseItem(id: string, text: string, earlier: readonly string[]):
   }
 }
 
-function wordsOf(body: readonly Token[], what: string): string | undefined {
+export function wordsOf(body: readonly Token[], what: string): string | undefined {
   if (body.length === 0) return undefined
   return textOf(body, what)
     .split('\n')
