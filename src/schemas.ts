@@ -1,3 +1,5 @@
+import { progressInput } from './goals/progress.js'
+
 const change = { type: 'string', enum: ['add', 'remove', 'edit'] } as const
 
 const line = (description: string) => ({ type: 'string', pattern: '\\S', description }) as const
@@ -242,6 +244,35 @@ const delivers = {
 
 const filed = <Schema extends { readonly properties: object }>(schema: Schema) => ({ ...schema, properties: { project, ...schema.properties }, $defs: defs })
 
+const taskId = line('The task id, such as t3.')
+
+const session = { type: 'string', pattern: '^[\\w-]+$', description: "The id of another session, when the task is in that session's list. Leave it out for a task of this session." } as const
+
+const requirementIds = { type: 'array', items: line('A requirement id, such as r2.'), uniqueItems: true, description: 'The ids of the requirements the work serves, as read with session or the note names them. A requirement is met once every task that serves it is done.' } as const
+
+const plannedTask = {
+  type: 'object',
+  properties: {
+    title: line('What the task does, in one plain line, such as "Move the browser view to cmod 8".'),
+    serves: requirementIds,
+    after: line('The id of a task this one waits for, either in the list already or earlier in this call.'),
+  },
+  required: ['title', 'serves'],
+  additionalProperties: false,
+} as const
+
+const filedRequirement = {
+  type: 'object',
+  properties: {
+    id: line('An existing requirement id, such as r2, when the words add to that requirement. Leave it out to add a requirement.'),
+    capability: line('For a new requirement: the Capability it belongs to, in a few words, such as "Progress view". Reuse the words of an existing requirement when it belongs to the same one.'),
+    line: line('For a new requirement: what the user requires, in your one plain line, such as "Progress shows beside the session".'),
+    quotes: { type: 'array', minItems: 1, items: line("Words copied exactly from the user's text, the part that asks for this requirement."), description: 'The user\'s own words for this requirement.' },
+  },
+  required: ['quotes'],
+  additionalProperties: false,
+} as const
+
 export const schemas = {
   propose: filed(proposalSchema),
   propose_options: filed(optionsSchema),
@@ -263,5 +294,62 @@ export const schemas = {
   withdraw: { type: 'object', properties: { id, reason: line('Why it no longer needs an answer.') }, required: ['id', 'reason'], additionalProperties: false },
   subscribe: { type: 'object', properties: { id }, required: ['id'], additionalProperties: false },
   unsubscribe: { type: 'object', properties: { id }, required: ['id'], additionalProperties: false },
-  read: { type: 'object', properties: { id: { type: 'string', description: 'One item. Leave it out to list every open item.' } }, additionalProperties: false },
+  read: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'One item. Leave id and session out to list every open item.' },
+      session: { ...session, description: "A session id, this session's included: its goal, the user's requirements with their words, and its tasks, each with the state the user sees." },
+    },
+    additionalProperties: false,
+  },
+  goal: { type: 'object', properties: { text: line('What this session is for, in one plain sentence as the user would say it.') }, required: ['text'], additionalProperties: false },
+  file: {
+    type: 'object',
+    properties: {
+      prompt: line('The id of the unfiled prompt or answer, as the note or the refusal names it.'),
+      requirements: { type: 'array', minItems: 1, items: filedRequirement, description: 'Each requirement the words ask for, with the words that ask for it. Give requirements or reason, never both.' },
+      reason: line('Why the words ask for nothing to build or change, such as "Thanks the agent" or "Asks a question answered in the reply". Give requirements or reason, never both.'),
+    },
+    required: ['prompt'],
+    additionalProperties: false,
+  },
+  plan: {
+    type: 'object',
+    properties: {
+      tasks: { type: 'array', minItems: 1, items: plannedTask, description: 'The tasks to add, in the order to do them. Each takes the next id, t1, t2, and so on.' },
+      template: { type: 'string', pattern: '^[\\w-]+$', description: "A template's name, such as release: its tasks are added after the ones in tasks." },
+      serves: { ...requirementIds, description: "The ids of the requirements the template's tasks serve." },
+    },
+    additionalProperties: false,
+  },
+  start: { type: 'object', properties: { task: taskId, session }, required: ['task'], additionalProperties: false },
+  finish: {
+    type: 'object',
+    properties: {
+      task: taskId,
+      session,
+      evidence: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 3,
+        items: { type: 'string', pattern: '\\S', maxLength: longestEvidence, description: `What you ran and what it showed, on one line of at most ${longestEvidence} characters, such as "bun test: 164 pass, 0 fail".` },
+        description: 'How you know the task is done.',
+      },
+    },
+    required: ['task', 'evidence'],
+    additionalProperties: false,
+  },
+  wait: {
+    type: 'object',
+    properties: {
+      task: taskId,
+      session,
+      on: line('The id of the open inbox item whose answer the task waits for. Give on or after, never both.'),
+      after: line('The id of the task in the same list this one waits for. Give on or after, never both.'),
+    },
+    required: ['task'],
+    additionalProperties: false,
+  },
+  drop: { type: 'object', properties: { task: taskId, session, reason: line('Why the task is no longer needed.') }, required: ['task', 'reason'], additionalProperties: false },
+  progress: progressInput,
 } as const

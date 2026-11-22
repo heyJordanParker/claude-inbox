@@ -279,7 +279,7 @@ function readHotkeys(hotkeys) {
     throw new Error(`package.json "cmod.hotkeys" is not a map of hotkeys to their title and optional default combo. ${fix}`);
   return { hotkeys: checkHotkeys('package.json "cmod"', hotkeys) };
 }
-var coreVersion = "8.2.0";
+var coreVersion = "8.3.1";
 var oldestCmodVersion = "8.0.0";
 function hotkeyCommand(mod, hotkey) {
   return `${mod}--${hotkey}`;
@@ -4232,7 +4232,10 @@ var conversationMethods = {
   before: "cmod:before",
   sessionColor: "cmod:sessionColor"
 };
-var sessionFields = { id: true, title: true, color: true, project: true, cwd: true, model: true, startedAt: true, lastAt: true, forkedFrom: true, isRunning: true, agentType: true, visitedAt: true, device: true, status: true, waitingFor: true, contextPercent: true, lastTurn: true };
+function subagentTranscript(sessionTranscript, task) {
+  return sessionTranscript?.endsWith(".jsonl") === true ? `${sessionTranscript.slice(0, -".jsonl".length)}/subagents/agent-${task}.jsonl` : undefined;
+}
+var sessionFields = { id: true, title: true, color: true, project: true, cwd: true, transcriptPath: true, model: true, startedAt: true, lastAt: true, forkedFrom: true, isRunning: true, agentType: true, visitedAt: true, device: true, status: true, waitingFor: true, contextPercent: true, lastTurn: true };
 async function usageOf(claude) {
   const [model, usage] = await Promise.all([claude.session.model(), claude.session.usage()]);
   const { tokens, window, percent } = usage.context;
@@ -4594,6 +4597,7 @@ function createSessionsClient({ name, claude, report, hookOn, routeOn, permissio
   const ownerOf = (session, data) => {
     const parent = session === current.id ? current : known.get(session);
     const isBackground = data.isBackground === true;
+    const transcriptPath = isBackground ? known.get(data.id)?.transcriptPath : subagentTranscript(parent?.transcriptPath, data.id);
     return sessionOf(() => ({
       id: data.id,
       title: data.title,
@@ -4601,6 +4605,7 @@ function createSessionsClient({ name, claude, report, hookOn, routeOn, permissio
       ...data.agentType === undefined ? {} : { agentType: data.agentType },
       model: data.model ?? "",
       cwd: parent?.cwd ?? "",
+      ...transcriptPath === undefined ? {} : { transcriptPath },
       isRunning: data.closedAt === undefined && (isBackground || (parent?.isRunning ?? true)),
       startedAt: data.openedAt,
       lastAt: data.closedAt ?? data.openedAt,
@@ -4653,7 +4658,7 @@ function createSessionsClient({ name, claude, report, hookOn, routeOn, permissio
       const routes = permissionRoutes?.();
       if (routes === undefined)
         throw new Error(withoutPermissionCheck(name, method));
-      return routes(method, { raise, refusalFor, hookOn, routeOn, current: () => current });
+      return routes(method, { name, raise, refusalFor, hookOn, routeOn, current: () => current });
     }
     const event = processEvents[named];
     const hook = (isBefore ? event.before : undefined) ?? event.on;
@@ -4818,7 +4823,7 @@ var answerKeys = {
   WorktreeCreate: ["result"],
   Elicitation: ["refuse"],
   ElicitationResponse: ["refuse"],
-  PermissionCheck: ["allow", "ask", "refuse"],
+  PermissionCheck: ["allow", "ask", "refuse", "note"],
   PermissionRequest: ["allow", "input", "updates", "refuse", "interrupt"],
   PermissionDenial: ["retry"],
   ToolBatch: ["note"],
@@ -5585,6 +5590,7 @@ function filledButton({ key, label, hotkey, variant = "secondary", onPress }) {
 
 // node_modules/@cmodjs/core/ui/areas.js
 var AbovePrompt = "abovePrompt";
+var BelowPrompt = "belowPrompt";
 var Working = "working";
 var TurnEnd2 = "turnEnd";
 var Dashboard = "dashboard";
@@ -7606,7 +7612,7 @@ function createLifecycle(definition, permissionRoutes = () => {
   };
   const isInstalledCopy = async () => {
     await recording;
-    if (plugin === undefined)
+    if (plugin === undefined || plugin.name === cmodPluginName)
       return true;
     const recorded = await readRecord((path) => claude().fs.read(path).catch(ifMissing(undefined)), plugin.store, plugin.name);
     return recorded === undefined || recorded.root === plugin.root;
@@ -8377,8 +8383,8 @@ async function createMod(definition, runtime) {
     }
   };
   const followCurrent = async (id, title) => {
-    const [model, usage] = await Promise.all([claude.session.model(), claude.session.usage()]);
-    followed = { id, title: title ?? "", project: modState.root, cwd, model, startedAt: new Date(usage.startedAt).toISOString(), ...forkedFrom === undefined ? {} : { forkedFrom }, ...agentType === undefined ? {} : { agentType } };
+    const [model, usage, { transcriptPath }] = await Promise.all([claude.session.model(), claude.session.usage(), claude.session.info()]);
+    followed = { id, title: title ?? "", project: modState.root, cwd, ...transcriptPath === "" ? {} : { transcriptPath }, model, startedAt: new Date(usage.startedAt).toISOString(), ...forkedFrom === undefined ? {} : { forkedFrom }, ...agentType === undefined ? {} : { agentType } };
     client.follow(followed);
   };
   router.add("classic.SessionStart", async (e, next) => {
@@ -8635,6 +8641,7 @@ async function startMod($, eventInput, passOn) {
       usage: () => $.session.usage(),
       surfaces: () => $.session.surfaces(),
       version: async () => (await $.session.version()).version,
+      info: () => $.session.info(),
       messages: (args) => args === undefined ? $.session.messages() : $.session.messages(args),
       append: (args) => $.session.append(args),
       send: (args) => $.session.send(args)
@@ -8774,6 +8781,7 @@ var http = {
 var device = {
   read: () => bound().device.read()
 };
+var providers = (name) => bound().providers(name);
 function defineMod(definition) {
   if (definition.name.trim() === "")
     throw new Error("defineMod: the mod needs a name, such as the name in .claude-plugin/plugin.json.");
@@ -8971,6 +8979,15 @@ function program(options) {
       state = "backoff";
       claude.clock.after(wait * 1000, () => void start());
     };
+    const answer = () => {
+      if (state === "running")
+        return address === undefined ? Promise.reject(noAddress()) : Promise.resolve(address);
+      if (state === "fatal")
+        return Promise.reject(failure);
+      if (state === "stopped")
+        start();
+      return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+    };
     announce(`the ${executable} program`);
     claude.session.surfaces().then((surfaces) => {
       if (surfaces.length > 0 && state === "stopped")
@@ -8981,13 +8998,7 @@ function program(options) {
         return state;
       },
       ready() {
-        if (state === "running")
-          return address === undefined ? Promise.reject(noAddress()) : Promise.resolve(address);
-        if (state === "fatal")
-          return Promise.reject(failure);
-        if (state === "stopped")
-          start();
-        return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+        return state === "running" && isFollowing ? instanceFile().then(track).then(answer) : answer();
       },
       provider(name) {
         if (!isElected)
@@ -13006,7 +13017,7 @@ function plainText(node) {
 `);
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/items/item.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/items/item.ts
 var longestTitle = 32;
 function titleOf(title, agent, project, session) {
   const line = title.split(`
@@ -13131,12 +13142,15 @@ function kindName(item) {
 }
 var kinds = ["proposal", "options", "question", "report"];
 var kindTabNames = { proposal: "Proposals", options: "Options", question: "Questions", report: "Reports" };
-function ago(at, now) {
-  const minutes = Math.max(0, Math.round((now - Date.parse(at)) / 60000));
+function elapsed(since, now) {
+  const minutes = Math.max(0, Math.round((now - Date.parse(since)) / 60000));
   if (minutes < 60)
-    return `${minutes}m ago`;
+    return `${minutes}m`;
   const hours = Math.round(minutes / 60);
-  return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+}
+function ago(at, now) {
+  return `${elapsed(at, now)} ago`;
 }
 function plural(count, word) {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -13254,66 +13268,1109 @@ function whereLine(project, isDiff) {
   return isDiff ? `what the work changed in ${projectName(project)}` : `in ${projectName(project)}`;
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/items/heard.ts
-function marksIn(heard, id, start) {
-  const known = heard[id];
-  if (known === undefined)
-    return { item: { at: start, count: 0 }, person: { at: start, count: 0 } };
-  return "at" in known ? { item: known, person: known } : known;
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/goals/goal.ts
+function emptyGoals(session, project) {
+  return { format: 1, session, project, requirements: [], filings: [], tasks: [], updatedAt: new Date().toISOString() };
 }
-function noteLines(answer) {
-  return (answer.corrections ?? []).map((each) => `- ${each.target}${each.revision === answer.revision ? "" : ` (written on revision ${revisionNumber(each.revision)})`}: "${each.words}"`);
+function isClosed(task) {
+  return task.state === "done" || task.state === "dropped";
 }
-function messageOf2(item, answer, number) {
-  const named = `"${item.revisions[answer.revision]?.content.title ?? current2(item).title}" (${item.id}), answer ${number}`;
-  const words = answer.words === undefined ? "" : `: "${answer.words}"`;
-  const withNotes = (said) => answer.corrections === undefined || answer.corrections.length === 0 ? said : [`${said}, with these notes:`, ...noteLines(answer), "Apply them as you go."].join(`
-`);
-  if (answer.kind === "approve")
-    return withNotes(`Inbox: the user approved the proposal ${named}${words}`);
-  if (answer.kind === "reject")
-    return [withNotes(`Inbox: the user rejected ${item.kind === "options" ? "every option in" : `the ${item.kind}`} ${named}`), `To resubmit it, revise it with the inbox's revise tool, which reopens it for the user. Never file it again as a new item.`].join(`
-`);
-  if (answer.kind === "option")
-    return withNotes(`Inbox: the user picked "${answer.option ?? ""}" in ${named}${words}`);
-  if (answer.kind === "answer")
-    return withNotes(`Inbox: the user answered ${named}${words}`);
-  if (answer.kind === "acknowledge")
-    return withNotes(`Inbox: the user marked the report ${named} done${words}`);
-  return [`Inbox: the user requested changes to ${named}:`, ...noteLines(answer), `Revise it with the inbox's revise tool, which keeps the item open for the user.`].join(`
-`);
+function waitingOn(task, items, person) {
+  if (isClosed(task))
+    return;
+  const item = items.find((each) => each.id === task.waitsOn);
+  return item !== undefined && statusOf(item, personOf(person, item)) === "open" && !isWithAgent(item, personOf(person, item)) ? item : undefined;
 }
-function isPlainDone(answer) {
-  return answer.kind === "acknowledge" && answer.words === undefined && (answer.corrections ?? []).length === 0;
+function shownState(task, goals, items, person) {
+  if (isClosed(task))
+    return task.state;
+  if (waitingOn(task, items, person) !== undefined)
+    return "waiting on you";
+  const before = task.after === undefined ? undefined : goals.tasks.find((each) => each.id === task.after);
+  if (before !== undefined && !isClosed(before))
+    return "waiting after";
+  return task.state;
 }
-function toldOf(item, person, session, senders) {
-  const revised = item.revisions.flatMap((revision, index) => index === 0 || revision.session === session ? [] : [{ kind: "note", file: "item", at: revision.at, text: `${senderOf2(revision, item.project, senders).title} revised "${revision.content.title}" (${item.id}) in the inbox.` }]);
-  const answered = person.answers.flatMap((answer, index) => isPlainDone(answer) ? [] : [{ kind: "prompt", file: "person", at: answer.at, text: messageOf2(item, answer, index + 1) }]);
-  const { withdrawal } = item;
-  const withdrawn = withdrawal === undefined || withdrawal.by.session === session ? [] : [{ kind: "note", file: "item", at: withdrawal.at, text: `${senderOf2(withdrawal.by, item.project, senders).title} withdrew "${current2(item).title}" (${item.id}) from the inbox: ${withdrawal.words}` }];
-  return [...revised, ...answered, ...withdrawn].sort((a, b) => a.at.localeCompare(b.at));
+function isMet(requirement, goals) {
+  const serving = goals.tasks.filter((task) => task.serves.includes(requirement.id) && task.state !== "dropped");
+  return serving.length > 0 && serving.every((task) => task.state === "done");
 }
-function isAfter(mark, told, earlier) {
-  return told.at > mark.at || told.at === mark.at && earlier.filter((each) => each.file === told.file && each.at === mark.at).length >= mark.count;
+function counts(goals, items, person) {
+  const tasks = goals.tasks.filter((task) => task.state !== "dropped");
+  return {
+    met: goals.requirements.filter((requirement) => isMet(requirement, goals)).length,
+    requirements: goals.requirements.length,
+    done: tasks.filter((task) => task.state === "done").length,
+    tasks: tasks.length,
+    waitingOnYou: tasks.filter((task) => shownState(task, goals, items, person) === "waiting on you").length
+  };
 }
-function unheard(item, person, session, marks, senders) {
-  const subscriber = item.subscribers.find((each) => each.session === session);
-  if (subscriber === undefined)
-    return [];
-  const told = toldOf(item, person, session, senders).filter((each) => each.at >= subscriber.since);
-  return told.filter((each, index) => isAfter(marks[each.file], each, told.slice(0, index)));
+function nextId(prefix, taken) {
+  return `${prefix}${Math.max(0, ...taken.map(({ id }) => Number(id.slice(1)) || 0)) + 1}`;
 }
-function advanced(heard, id, told, start) {
-  const marks = marksIn(heard, id, start);
-  const mark = marks[told.file];
-  return { ...heard, [id]: { ...marks, [told.file]: mark.at === told.at ? { at: told.at, count: mark.count + 1 } : { at: told.at, count: 1 } } };
+
+// node_modules/@cfworker/json-schema/dist/esm/deep-compare-strict.js
+function deepCompareStrict(a, b) {
+  const typeofa = typeof a;
+  if (typeofa !== typeof b) {
+    return false;
+  }
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b)) {
+      return false;
+    }
+    const length = a.length;
+    if (length !== b.length) {
+      return false;
+    }
+    for (let i = 0;i < length; i++) {
+      if (!deepCompareStrict(a[i], b[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (typeofa === "object") {
+    if (!a || !b) {
+      return a === b;
+    }
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    const length = aKeys.length;
+    if (length !== bKeys.length) {
+      return false;
+    }
+    for (const k of aKeys) {
+      if (!deepCompareStrict(a[k], b[k])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return a === b;
 }
-function isUnheard(item, person, senders) {
-  const sent = person.answers.at(-1);
-  return sent !== undefined && !isPlainDone(sent) && !isFollowed(item, senders);
+
+// node_modules/@cfworker/json-schema/dist/esm/pointer.js
+function encodePointer(p) {
+  return encodeURI(escapePointer(p));
 }
-function unfollowedWarning(item) {
-  return { message: `No running session follows "${current2(item).title}"`, description: "Your answer is kept with the item, and reaches its session when it resumes." };
+function escapePointer(p) {
+  return p.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+// node_modules/@cfworker/json-schema/dist/esm/dereference.js
+var schemaArrayKeyword = {
+  prefixItems: true,
+  items: true,
+  allOf: true,
+  anyOf: true,
+  oneOf: true
+};
+var schemaMapKeyword = {
+  $defs: true,
+  definitions: true,
+  properties: true,
+  patternProperties: true,
+  dependentSchemas: true
+};
+var ignoredKeyword = {
+  id: true,
+  $id: true,
+  $ref: true,
+  $schema: true,
+  $anchor: true,
+  $vocabulary: true,
+  $comment: true,
+  default: true,
+  enum: true,
+  const: true,
+  required: true,
+  type: true,
+  maximum: true,
+  minimum: true,
+  exclusiveMaximum: true,
+  exclusiveMinimum: true,
+  multipleOf: true,
+  maxLength: true,
+  minLength: true,
+  pattern: true,
+  format: true,
+  maxItems: true,
+  minItems: true,
+  uniqueItems: true,
+  maxProperties: true,
+  minProperties: true
+};
+var initialBaseURI = typeof self !== "undefined" && self.location && self.location.origin !== "null" ? new URL(self.location.origin + self.location.pathname + location.search) : new URL("https://github.com/cfworker");
+function dereference(schema, lookup = Object.create(null), baseURI = initialBaseURI, basePointer = "") {
+  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+    const id = schema.$id || schema.id;
+    if (id) {
+      const url = new URL(id, baseURI.href);
+      if (url.hash.length > 1) {
+        lookup[url.href] = schema;
+      } else {
+        url.hash = "";
+        if (basePointer === "") {
+          baseURI = url;
+        } else {
+          dereference(schema, lookup, baseURI);
+        }
+      }
+    }
+  } else if (schema !== true && schema !== false) {
+    return lookup;
+  }
+  const schemaURI = baseURI.href + (basePointer ? "#" + basePointer : "");
+  if (lookup[schemaURI] !== undefined) {
+    throw new Error(`Duplicate schema URI "${schemaURI}".`);
+  }
+  lookup[schemaURI] = schema;
+  if (schema === true || schema === false) {
+    return lookup;
+  }
+  if (schema.__absolute_uri__ === undefined) {
+    Object.defineProperty(schema, "__absolute_uri__", {
+      enumerable: false,
+      value: schemaURI
+    });
+  }
+  if (schema.$ref && schema.__absolute_ref__ === undefined) {
+    const url = new URL(schema.$ref, baseURI.href);
+    url.hash = url.hash;
+    Object.defineProperty(schema, "__absolute_ref__", {
+      enumerable: false,
+      value: url.href
+    });
+  }
+  if (schema.$recursiveRef && schema.__absolute_recursive_ref__ === undefined) {
+    const url = new URL(schema.$recursiveRef, baseURI.href);
+    url.hash = url.hash;
+    Object.defineProperty(schema, "__absolute_recursive_ref__", {
+      enumerable: false,
+      value: url.href
+    });
+  }
+  if (schema.$anchor) {
+    const url = new URL("#" + schema.$anchor, baseURI.href);
+    lookup[url.href] = schema;
+  }
+  for (let key in schema) {
+    if (ignoredKeyword[key]) {
+      continue;
+    }
+    const keyBase = `${basePointer}/${encodePointer(key)}`;
+    const subSchema = schema[key];
+    if (Array.isArray(subSchema)) {
+      if (schemaArrayKeyword[key]) {
+        const length = subSchema.length;
+        for (let i = 0;i < length; i++) {
+          dereference(subSchema[i], lookup, baseURI, `${keyBase}/${i}`);
+        }
+      }
+    } else if (schemaMapKeyword[key]) {
+      for (let subKey in subSchema) {
+        dereference(subSchema[subKey], lookup, baseURI, `${keyBase}/${encodePointer(subKey)}`);
+      }
+    } else {
+      dereference(subSchema, lookup, baseURI, keyBase);
+    }
+  }
+  return lookup;
+}
+
+// node_modules/@cfworker/json-schema/dist/esm/format.js
+var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
+var DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+var TIME = /^(\d\d):(\d\d):(\d\d)(\.\d+)?(z|[+-]\d\d(?::?\d\d)?)?$/i;
+var HOSTNAME = /^(?=.{1,253}\.?$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[-0-9a-z]{0,61}[0-9a-z])?)*\.?$/i;
+var URIREF = /^(?:[a-z][a-z0-9+\-.]*:)?(?:\/?\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:){0,1}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)|[Vv][0-9a-f]+\.[a-z0-9\-._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)|(?:[a-z0-9\-._~!$&'"()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[a-z0-9\-._~!$&'"()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[a-z0-9\-._~!$&'"()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'"()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[a-z0-9\-._~!$&'"()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'"()*+,;=:@]|%[0-9a-f]{2})*)*)?(?:\?(?:[a-z0-9\-._~!$&'"()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[a-z0-9\-._~!$&'"()*+,;=:@/?]|%[0-9a-f]{2})*)?$/i;
+var URITEMPLATE = /^(?:(?:[^\x00-\x20"'<>%\\^`{|}]|%[0-9a-f]{2})|\{[+#./;?&=,!@|]?(?:[a-z0-9_]|%[0-9a-f]{2})+(?::[1-9][0-9]{0,3}|\*)?(?:,(?:[a-z0-9_]|%[0-9a-f]{2})+(?::[1-9][0-9]{0,3}|\*)?)*\})*$/i;
+var URL_ = /^(?:(?:https?|ftp):\/\/)(?:\S+(?::\S*)?@)?(?:(?!10(?:\.\d{1,3}){3})(?!127(?:\.\d{1,3}){3})(?!169\.254(?:\.\d{1,3}){2})(?!192\.168(?:\.\d{1,3}){2})(?!172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z\u{00a1}-\u{ffff}0-9]+-?)*[a-z\u{00a1}-\u{ffff}0-9]+)(?:\.(?:[a-z\u{00a1}-\u{ffff}0-9]+-?)*[a-z\u{00a1}-\u{ffff}0-9]+)*(?:\.(?:[a-z\u{00a1}-\u{ffff}]{2,})))(?::\d{2,5})?(?:\/[^\s]*)?$/iu;
+var UUID = /^(?:urn:uuid:)?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+var JSON_POINTER = /^(?:\/(?:[^~/]|~0|~1)*)*$/;
+var JSON_POINTER_URI_FRAGMENT = /^#(?:\/(?:[a-z0-9_\-.!$&'()*+,;:=@]|%[0-9a-f]{2}|~0|~1)*)*$/i;
+var RELATIVE_JSON_POINTER = /^(?:0|[1-9][0-9]*)(?:#|(?:\/(?:[^~/]|~0|~1)*)*)$/;
+var EMAIL = (input) => {
+  if (input[0] === '"')
+    return false;
+  const [name, host, ...rest] = input.split("@");
+  if (!name || !host || rest.length !== 0 || name.length > 64 || host.length > 253)
+    return false;
+  if (name[0] === "." || name.endsWith(".") || name.includes(".."))
+    return false;
+  if (!/^[a-z0-9.-]+$/i.test(host) || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/i.test(name))
+    return false;
+  return host.split(".").every((part) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(part));
+};
+var IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
+var IPV6 = /^((([0-9a-f]{1,4}:){7}([0-9a-f]{1,4}|:))|(([0-9a-f]{1,4}:){6}(:[0-9a-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-f]{1,4}:){5}(((:[0-9a-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9a-f]{1,4}:){4}(((:[0-9a-f]{1,4}){1,3})|((:[0-9a-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-f]{1,4}:){3}(((:[0-9a-f]{1,4}){1,4})|((:[0-9a-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-f]{1,4}:){2}(((:[0-9a-f]{1,4}){1,5})|((:[0-9a-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9a-f]{1,4}:){1}(((:[0-9a-f]{1,4}){1,6})|((:[0-9a-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9a-f]{1,4}){1,7})|((:[0-9a-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))$/i;
+var DURATION = (input) => input.length > 1 && input.length < 80 && (/^P\d+([.,]\d+)?W$/.test(input) || /^P[\dYMDTHS]*(\d[.,]\d+)?[YMDHS]$/.test(input) && /^P([.,\d]+Y)?([.,\d]+M)?([.,\d]+D)?(T([.,\d]+H)?([.,\d]+M)?([.,\d]+S)?)?$/.test(input));
+function bind2(r) {
+  return r.test.bind(r);
+}
+var format = {
+  date,
+  time: time.bind(undefined, false),
+  "date-time": date_time,
+  duration: DURATION,
+  uri,
+  "uri-reference": bind2(URIREF),
+  "uri-template": bind2(URITEMPLATE),
+  url: bind2(URL_),
+  email: EMAIL,
+  hostname: bind2(HOSTNAME),
+  ipv4: bind2(IPV4),
+  ipv6: bind2(IPV6),
+  regex,
+  uuid: bind2(UUID),
+  "json-pointer": bind2(JSON_POINTER),
+  "json-pointer-uri-fragment": bind2(JSON_POINTER_URI_FRAGMENT),
+  "relative-json-pointer": bind2(RELATIVE_JSON_POINTER)
+};
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+function date(str) {
+  const matches = str.match(DATE);
+  if (!matches)
+    return false;
+  const year = +matches[1];
+  const month = +matches[2];
+  const day = +matches[3];
+  return month >= 1 && month <= 12 && day >= 1 && day <= (month == 2 && isLeapYear(year) ? 29 : DAYS[month]);
+}
+function time(full, str) {
+  const matches = str.match(TIME);
+  if (!matches)
+    return false;
+  const hour = +matches[1];
+  const minute = +matches[2];
+  const second = +matches[3];
+  const timeZone = !!matches[5];
+  return (hour <= 23 && minute <= 59 && second <= 59 || hour == 23 && minute == 59 && second == 60) && (!full || timeZone);
+}
+var DATE_TIME_SEPARATOR = /t|\s/i;
+function date_time(str) {
+  const dateTime = str.split(DATE_TIME_SEPARATOR);
+  return dateTime.length == 2 && date(dateTime[0]) && time(true, dateTime[1]);
+}
+var NOT_URI_FRAGMENT = /\/|:/;
+var URI_PATTERN = /^(?:[a-z][a-z0-9+\-.]*:)(?:\/?\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:){0,1}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)|[Vv][0-9a-f]+\.[a-z0-9\-._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)|(?:[a-z0-9\-._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)(?:\?(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$/i;
+function uri(str) {
+  return NOT_URI_FRAGMENT.test(str) && URI_PATTERN.test(str);
+}
+var Z_ANCHOR = /[^\\]\\Z/;
+function regex(str) {
+  if (Z_ANCHOR.test(str))
+    return false;
+  try {
+    new RegExp(str, "u");
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// node_modules/@cfworker/json-schema/dist/esm/ucs2-length.js
+function ucs2length(s) {
+  let result = 0;
+  let length = s.length;
+  let index = 0;
+  let charCode;
+  while (index < length) {
+    result++;
+    charCode = s.charCodeAt(index++);
+    if (charCode >= 55296 && charCode <= 56319 && index < length) {
+      charCode = s.charCodeAt(index);
+      if ((charCode & 64512) == 56320) {
+        index++;
+      }
+    }
+  }
+  return result;
+}
+
+// node_modules/@cfworker/json-schema/dist/esm/validate.js
+function validate(instance, schema, draft = "2019-09", lookup = dereference(schema), shortCircuit = true, recursiveAnchor = null, instanceLocation = "#", schemaLocation = "#", evaluated = Object.create(null)) {
+  if (schema === true) {
+    return { valid: true, errors: [] };
+  }
+  if (schema === false) {
+    return {
+      valid: false,
+      errors: [
+        {
+          instanceLocation,
+          keyword: "false",
+          keywordLocation: instanceLocation,
+          error: "False boolean schema."
+        }
+      ]
+    };
+  }
+  const rawInstanceType = typeof instance;
+  let instanceType;
+  switch (rawInstanceType) {
+    case "boolean":
+    case "number":
+    case "string":
+      instanceType = rawInstanceType;
+      break;
+    case "object":
+      if (instance === null) {
+        instanceType = "null";
+      } else if (Array.isArray(instance)) {
+        instanceType = "array";
+      } else {
+        instanceType = "object";
+      }
+      break;
+    default:
+      throw new Error(`Instances of "${rawInstanceType}" type are not supported.`);
+  }
+  const { $ref, $recursiveRef, $recursiveAnchor, type: $type, const: $const, enum: $enum, required: $required, not: $not, anyOf: $anyOf, allOf: $allOf, oneOf: $oneOf, if: $if, then: $then, else: $else, format: $format, properties: $properties, patternProperties: $patternProperties, additionalProperties: $additionalProperties, unevaluatedProperties: $unevaluatedProperties, minProperties: $minProperties, maxProperties: $maxProperties, propertyNames: $propertyNames, dependentRequired: $dependentRequired, dependentSchemas: $dependentSchemas, dependencies: $dependencies, prefixItems: $prefixItems, items: $items, additionalItems: $additionalItems, unevaluatedItems: $unevaluatedItems, contains: $contains, minContains: $minContains, maxContains: $maxContains, minItems: $minItems, maxItems: $maxItems, uniqueItems: $uniqueItems, minimum: $minimum, maximum: $maximum, exclusiveMinimum: $exclusiveMinimum, exclusiveMaximum: $exclusiveMaximum, multipleOf: $multipleOf, minLength: $minLength, maxLength: $maxLength, pattern: $pattern, __absolute_ref__, __absolute_recursive_ref__ } = schema;
+  const errors = [];
+  if ($recursiveAnchor === true && recursiveAnchor === null) {
+    recursiveAnchor = schema;
+  }
+  if ($recursiveRef === "#") {
+    const refSchema = recursiveAnchor === null ? lookup[__absolute_recursive_ref__] : recursiveAnchor;
+    const keywordLocation = `${schemaLocation}/$recursiveRef`;
+    const result = validate(instance, recursiveAnchor === null ? schema : recursiveAnchor, draft, lookup, shortCircuit, refSchema, instanceLocation, keywordLocation, evaluated);
+    if (!result.valid) {
+      errors.push({
+        instanceLocation,
+        keyword: "$recursiveRef",
+        keywordLocation,
+        error: "A subschema had errors."
+      }, ...result.errors);
+    }
+  }
+  if ($ref !== undefined) {
+    const uri = __absolute_ref__ || $ref;
+    const refSchema = lookup[uri];
+    if (refSchema === undefined) {
+      let message = `Unresolved $ref "${$ref}".`;
+      if (__absolute_ref__ && __absolute_ref__ !== $ref) {
+        message += `  Absolute URI "${__absolute_ref__}".`;
+      }
+      message += `
+Known schemas:
+- ${Object.keys(lookup).join(`
+- `)}`;
+      throw new Error(message);
+    }
+    const keywordLocation = `${schemaLocation}/$ref`;
+    const result = validate(instance, refSchema, draft, lookup, shortCircuit, recursiveAnchor, instanceLocation, keywordLocation, evaluated);
+    if (!result.valid) {
+      errors.push({
+        instanceLocation,
+        keyword: "$ref",
+        keywordLocation,
+        error: "A subschema had errors."
+      }, ...result.errors);
+    }
+    if (draft === "4" || draft === "7") {
+      return { valid: errors.length === 0, errors };
+    }
+  }
+  if (Array.isArray($type)) {
+    let length = $type.length;
+    let valid = false;
+    for (let i = 0;i < length; i++) {
+      if (instanceType === $type[i] || $type[i] === "integer" && instanceType === "number" && instance % 1 === 0 && instance === instance) {
+        valid = true;
+        break;
+      }
+    }
+    if (!valid) {
+      errors.push({
+        instanceLocation,
+        keyword: "type",
+        keywordLocation: `${schemaLocation}/type`,
+        error: `Instance type "${instanceType}" is invalid. Expected "${$type.join('", "')}".`
+      });
+    }
+  } else if ($type === "integer") {
+    if (instanceType !== "number" || instance % 1 || instance !== instance) {
+      errors.push({
+        instanceLocation,
+        keyword: "type",
+        keywordLocation: `${schemaLocation}/type`,
+        error: `Instance type "${instanceType}" is invalid. Expected "${$type}".`
+      });
+    }
+  } else if ($type !== undefined && instanceType !== $type) {
+    errors.push({
+      instanceLocation,
+      keyword: "type",
+      keywordLocation: `${schemaLocation}/type`,
+      error: `Instance type "${instanceType}" is invalid. Expected "${$type}".`
+    });
+  }
+  if ($const !== undefined) {
+    if (instanceType === "object" || instanceType === "array") {
+      if (!deepCompareStrict(instance, $const)) {
+        errors.push({
+          instanceLocation,
+          keyword: "const",
+          keywordLocation: `${schemaLocation}/const`,
+          error: `Instance does not match ${JSON.stringify($const)}.`
+        });
+      }
+    } else if (instance !== $const) {
+      errors.push({
+        instanceLocation,
+        keyword: "const",
+        keywordLocation: `${schemaLocation}/const`,
+        error: `Instance does not match ${JSON.stringify($const)}.`
+      });
+    }
+  }
+  if ($enum !== undefined) {
+    if (instanceType === "object" || instanceType === "array") {
+      if (!$enum.some((value) => deepCompareStrict(instance, value))) {
+        errors.push({
+          instanceLocation,
+          keyword: "enum",
+          keywordLocation: `${schemaLocation}/enum`,
+          error: `Instance does not match any of ${JSON.stringify($enum)}.`
+        });
+      }
+    } else if (!$enum.some((value) => instance === value)) {
+      errors.push({
+        instanceLocation,
+        keyword: "enum",
+        keywordLocation: `${schemaLocation}/enum`,
+        error: `Instance does not match any of ${JSON.stringify($enum)}.`
+      });
+    }
+  }
+  if ($not !== undefined) {
+    const keywordLocation = `${schemaLocation}/not`;
+    const result = validate(instance, $not, draft, lookup, shortCircuit, recursiveAnchor, instanceLocation, keywordLocation);
+    if (result.valid) {
+      errors.push({
+        instanceLocation,
+        keyword: "not",
+        keywordLocation,
+        error: 'Instance matched "not" schema.'
+      });
+    }
+  }
+  let subEvaluateds = [];
+  if ($anyOf !== undefined) {
+    const keywordLocation = `${schemaLocation}/anyOf`;
+    const errorsLength = errors.length;
+    let anyValid = false;
+    for (let i = 0;i < $anyOf.length; i++) {
+      const subSchema = $anyOf[i];
+      const subEvaluated = Object.create(evaluated);
+      const result = validate(instance, subSchema, draft, lookup, shortCircuit, $recursiveAnchor === true ? recursiveAnchor : null, instanceLocation, `${keywordLocation}/${i}`, subEvaluated);
+      errors.push(...result.errors);
+      anyValid = anyValid || result.valid;
+      if (result.valid) {
+        subEvaluateds.push(subEvaluated);
+      }
+    }
+    if (anyValid) {
+      errors.length = errorsLength;
+    } else {
+      errors.splice(errorsLength, 0, {
+        instanceLocation,
+        keyword: "anyOf",
+        keywordLocation,
+        error: "Instance does not match any subschemas."
+      });
+    }
+  }
+  if ($allOf !== undefined) {
+    const keywordLocation = `${schemaLocation}/allOf`;
+    const errorsLength = errors.length;
+    let allValid = true;
+    for (let i = 0;i < $allOf.length; i++) {
+      const subSchema = $allOf[i];
+      const subEvaluated = Object.create(evaluated);
+      const result = validate(instance, subSchema, draft, lookup, shortCircuit, $recursiveAnchor === true ? recursiveAnchor : null, instanceLocation, `${keywordLocation}/${i}`, subEvaluated);
+      errors.push(...result.errors);
+      allValid = allValid && result.valid;
+      if (result.valid) {
+        subEvaluateds.push(subEvaluated);
+      }
+    }
+    if (allValid) {
+      errors.length = errorsLength;
+    } else {
+      errors.splice(errorsLength, 0, {
+        instanceLocation,
+        keyword: "allOf",
+        keywordLocation,
+        error: `Instance does not match every subschema.`
+      });
+    }
+  }
+  if ($oneOf !== undefined) {
+    const keywordLocation = `${schemaLocation}/oneOf`;
+    const errorsLength = errors.length;
+    const matches = $oneOf.filter((subSchema, i) => {
+      const subEvaluated = Object.create(evaluated);
+      const result = validate(instance, subSchema, draft, lookup, shortCircuit, $recursiveAnchor === true ? recursiveAnchor : null, instanceLocation, `${keywordLocation}/${i}`, subEvaluated);
+      errors.push(...result.errors);
+      if (result.valid) {
+        subEvaluateds.push(subEvaluated);
+      }
+      return result.valid;
+    }).length;
+    if (matches === 1) {
+      errors.length = errorsLength;
+    } else {
+      errors.splice(errorsLength, 0, {
+        instanceLocation,
+        keyword: "oneOf",
+        keywordLocation,
+        error: `Instance does not match exactly one subschema (${matches} matches).`
+      });
+    }
+  }
+  if (instanceType === "object" || instanceType === "array") {
+    Object.assign(evaluated, ...subEvaluateds);
+  }
+  if ($if !== undefined) {
+    const keywordLocation = `${schemaLocation}/if`;
+    const conditionResult = validate(instance, $if, draft, lookup, shortCircuit, recursiveAnchor, instanceLocation, keywordLocation, evaluated).valid;
+    if (conditionResult) {
+      if ($then !== undefined) {
+        const thenResult = validate(instance, $then, draft, lookup, shortCircuit, recursiveAnchor, instanceLocation, `${schemaLocation}/then`, evaluated);
+        if (!thenResult.valid) {
+          errors.push({
+            instanceLocation,
+            keyword: "if",
+            keywordLocation,
+            error: `Instance does not match "then" schema.`
+          }, ...thenResult.errors);
+        }
+      }
+    } else if ($else !== undefined) {
+      const elseResult = validate(instance, $else, draft, lookup, shortCircuit, recursiveAnchor, instanceLocation, `${schemaLocation}/else`, evaluated);
+      if (!elseResult.valid) {
+        errors.push({
+          instanceLocation,
+          keyword: "if",
+          keywordLocation,
+          error: `Instance does not match "else" schema.`
+        }, ...elseResult.errors);
+      }
+    }
+  }
+  if (instanceType === "object") {
+    if ($required !== undefined) {
+      for (const key of $required) {
+        if (!(key in instance)) {
+          errors.push({
+            instanceLocation,
+            keyword: "required",
+            keywordLocation: `${schemaLocation}/required`,
+            error: `Instance does not have required property "${key}".`
+          });
+        }
+      }
+    }
+    const keys = Object.keys(instance);
+    if ($minProperties !== undefined && keys.length < $minProperties) {
+      errors.push({
+        instanceLocation,
+        keyword: "minProperties",
+        keywordLocation: `${schemaLocation}/minProperties`,
+        error: `Instance does not have at least ${$minProperties} properties.`
+      });
+    }
+    if ($maxProperties !== undefined && keys.length > $maxProperties) {
+      errors.push({
+        instanceLocation,
+        keyword: "maxProperties",
+        keywordLocation: `${schemaLocation}/maxProperties`,
+        error: `Instance does not have at least ${$maxProperties} properties.`
+      });
+    }
+    if ($propertyNames !== undefined) {
+      const keywordLocation = `${schemaLocation}/propertyNames`;
+      for (const key in instance) {
+        const subInstancePointer = `${instanceLocation}/${encodePointer(key)}`;
+        const result = validate(key, $propertyNames, draft, lookup, shortCircuit, recursiveAnchor, subInstancePointer, keywordLocation);
+        if (!result.valid) {
+          errors.push({
+            instanceLocation,
+            keyword: "propertyNames",
+            keywordLocation,
+            error: `Property name "${key}" does not match schema.`
+          }, ...result.errors);
+        }
+      }
+    }
+    if ($dependentRequired !== undefined) {
+      const keywordLocation = `${schemaLocation}/dependantRequired`;
+      for (const key in $dependentRequired) {
+        if (key in instance) {
+          const required = $dependentRequired[key];
+          for (const dependantKey of required) {
+            if (!(dependantKey in instance)) {
+              errors.push({
+                instanceLocation,
+                keyword: "dependentRequired",
+                keywordLocation,
+                error: `Instance has "${key}" but does not have "${dependantKey}".`
+              });
+            }
+          }
+        }
+      }
+    }
+    if ($dependentSchemas !== undefined) {
+      for (const key in $dependentSchemas) {
+        const keywordLocation = `${schemaLocation}/dependentSchemas`;
+        if (key in instance) {
+          const result = validate(instance, $dependentSchemas[key], draft, lookup, shortCircuit, recursiveAnchor, instanceLocation, `${keywordLocation}/${encodePointer(key)}`, evaluated);
+          if (!result.valid) {
+            errors.push({
+              instanceLocation,
+              keyword: "dependentSchemas",
+              keywordLocation,
+              error: `Instance has "${key}" but does not match dependant schema.`
+            }, ...result.errors);
+          }
+        }
+      }
+    }
+    if ($dependencies !== undefined) {
+      const keywordLocation = `${schemaLocation}/dependencies`;
+      for (const key in $dependencies) {
+        if (key in instance) {
+          const propsOrSchema = $dependencies[key];
+          if (Array.isArray(propsOrSchema)) {
+            for (const dependantKey of propsOrSchema) {
+              if (!(dependantKey in instance)) {
+                errors.push({
+                  instanceLocation,
+                  keyword: "dependencies",
+                  keywordLocation,
+                  error: `Instance has "${key}" but does not have "${dependantKey}".`
+                });
+              }
+            }
+          } else {
+            const result = validate(instance, propsOrSchema, draft, lookup, shortCircuit, recursiveAnchor, instanceLocation, `${keywordLocation}/${encodePointer(key)}`);
+            if (!result.valid) {
+              errors.push({
+                instanceLocation,
+                keyword: "dependencies",
+                keywordLocation,
+                error: `Instance has "${key}" but does not match dependant schema.`
+              }, ...result.errors);
+            }
+          }
+        }
+      }
+    }
+    const thisEvaluated = Object.create(null);
+    let stop = false;
+    if ($properties !== undefined) {
+      const keywordLocation = `${schemaLocation}/properties`;
+      for (const key in $properties) {
+        if (!(key in instance)) {
+          continue;
+        }
+        const subInstancePointer = `${instanceLocation}/${encodePointer(key)}`;
+        const result = validate(instance[key], $properties[key], draft, lookup, shortCircuit, recursiveAnchor, subInstancePointer, `${keywordLocation}/${encodePointer(key)}`);
+        if (result.valid) {
+          evaluated[key] = thisEvaluated[key] = true;
+        } else {
+          stop = shortCircuit;
+          errors.push({
+            instanceLocation,
+            keyword: "properties",
+            keywordLocation,
+            error: `Property "${key}" does not match schema.`
+          }, ...result.errors);
+          if (stop)
+            break;
+        }
+      }
+    }
+    if (!stop && $patternProperties !== undefined) {
+      const keywordLocation = `${schemaLocation}/patternProperties`;
+      for (const pattern in $patternProperties) {
+        const regex = new RegExp(pattern, "u");
+        const subSchema = $patternProperties[pattern];
+        for (const key in instance) {
+          if (!regex.test(key)) {
+            continue;
+          }
+          const subInstancePointer = `${instanceLocation}/${encodePointer(key)}`;
+          const result = validate(instance[key], subSchema, draft, lookup, shortCircuit, recursiveAnchor, subInstancePointer, `${keywordLocation}/${encodePointer(pattern)}`);
+          if (result.valid) {
+            evaluated[key] = thisEvaluated[key] = true;
+          } else {
+            stop = shortCircuit;
+            errors.push({
+              instanceLocation,
+              keyword: "patternProperties",
+              keywordLocation,
+              error: `Property "${key}" matches pattern "${pattern}" but does not match associated schema.`
+            }, ...result.errors);
+          }
+        }
+      }
+    }
+    if (!stop && $additionalProperties !== undefined) {
+      const keywordLocation = `${schemaLocation}/additionalProperties`;
+      for (const key in instance) {
+        if (thisEvaluated[key]) {
+          continue;
+        }
+        const subInstancePointer = `${instanceLocation}/${encodePointer(key)}`;
+        const result = validate(instance[key], $additionalProperties, draft, lookup, shortCircuit, recursiveAnchor, subInstancePointer, keywordLocation);
+        if (result.valid) {
+          evaluated[key] = true;
+        } else {
+          stop = shortCircuit;
+          errors.push({
+            instanceLocation,
+            keyword: "additionalProperties",
+            keywordLocation,
+            error: `Property "${key}" does not match additional properties schema.`
+          }, ...result.errors);
+        }
+      }
+    } else if (!stop && $unevaluatedProperties !== undefined) {
+      const keywordLocation = `${schemaLocation}/unevaluatedProperties`;
+      for (const key in instance) {
+        if (!evaluated[key]) {
+          const subInstancePointer = `${instanceLocation}/${encodePointer(key)}`;
+          const result = validate(instance[key], $unevaluatedProperties, draft, lookup, shortCircuit, recursiveAnchor, subInstancePointer, keywordLocation);
+          if (result.valid) {
+            evaluated[key] = true;
+          } else {
+            errors.push({
+              instanceLocation,
+              keyword: "unevaluatedProperties",
+              keywordLocation,
+              error: `Property "${key}" does not match unevaluated properties schema.`
+            }, ...result.errors);
+          }
+        }
+      }
+    }
+  } else if (instanceType === "array") {
+    if ($maxItems !== undefined && instance.length > $maxItems) {
+      errors.push({
+        instanceLocation,
+        keyword: "maxItems",
+        keywordLocation: `${schemaLocation}/maxItems`,
+        error: `Array has too many items (${instance.length} > ${$maxItems}).`
+      });
+    }
+    if ($minItems !== undefined && instance.length < $minItems) {
+      errors.push({
+        instanceLocation,
+        keyword: "minItems",
+        keywordLocation: `${schemaLocation}/minItems`,
+        error: `Array has too few items (${instance.length} < ${$minItems}).`
+      });
+    }
+    const length = instance.length;
+    let i = 0;
+    let stop = false;
+    if ($prefixItems !== undefined) {
+      const keywordLocation = `${schemaLocation}/prefixItems`;
+      const length2 = Math.min($prefixItems.length, length);
+      for (;i < length2; i++) {
+        const result = validate(instance[i], $prefixItems[i], draft, lookup, shortCircuit, recursiveAnchor, `${instanceLocation}/${i}`, `${keywordLocation}/${i}`);
+        evaluated[i] = true;
+        if (!result.valid) {
+          stop = shortCircuit;
+          errors.push({
+            instanceLocation,
+            keyword: "prefixItems",
+            keywordLocation,
+            error: `Items did not match schema.`
+          }, ...result.errors);
+          if (stop)
+            break;
+        }
+      }
+    }
+    if ($items !== undefined) {
+      const keywordLocation = `${schemaLocation}/items`;
+      if (Array.isArray($items)) {
+        const length2 = Math.min($items.length, length);
+        for (;i < length2; i++) {
+          const result = validate(instance[i], $items[i], draft, lookup, shortCircuit, recursiveAnchor, `${instanceLocation}/${i}`, `${keywordLocation}/${i}`);
+          evaluated[i] = true;
+          if (!result.valid) {
+            stop = shortCircuit;
+            errors.push({
+              instanceLocation,
+              keyword: "items",
+              keywordLocation,
+              error: `Items did not match schema.`
+            }, ...result.errors);
+            if (stop)
+              break;
+          }
+        }
+      } else {
+        for (;i < length; i++) {
+          const result = validate(instance[i], $items, draft, lookup, shortCircuit, recursiveAnchor, `${instanceLocation}/${i}`, keywordLocation);
+          evaluated[i] = true;
+          if (!result.valid) {
+            stop = shortCircuit;
+            errors.push({
+              instanceLocation,
+              keyword: "items",
+              keywordLocation,
+              error: `Items did not match schema.`
+            }, ...result.errors);
+            if (stop)
+              break;
+          }
+        }
+      }
+      if (!stop && $additionalItems !== undefined) {
+        const keywordLocation = `${schemaLocation}/additionalItems`;
+        for (;i < length; i++) {
+          const result = validate(instance[i], $additionalItems, draft, lookup, shortCircuit, recursiveAnchor, `${instanceLocation}/${i}`, keywordLocation);
+          evaluated[i] = true;
+          if (!result.valid) {
+            stop = shortCircuit;
+            errors.push({
+              instanceLocation,
+              keyword: "additionalItems",
+              keywordLocation,
+              error: `Items did not match additional items schema.`
+            }, ...result.errors);
+          }
+        }
+      }
+    }
+    if ($contains !== undefined) {
+      if (length === 0 && $minContains === undefined) {
+        errors.push({
+          instanceLocation,
+          keyword: "contains",
+          keywordLocation: `${schemaLocation}/contains`,
+          error: `Array is empty. It must contain at least one item matching the schema.`
+        });
+      } else if ($minContains !== undefined && length < $minContains) {
+        errors.push({
+          instanceLocation,
+          keyword: "minContains",
+          keywordLocation: `${schemaLocation}/minContains`,
+          error: `Array has less items (${length}) than minContains (${$minContains}).`
+        });
+      } else {
+        const keywordLocation = `${schemaLocation}/contains`;
+        const errorsLength = errors.length;
+        let contained = 0;
+        for (let j = 0;j < length; j++) {
+          const result = validate(instance[j], $contains, draft, lookup, shortCircuit, recursiveAnchor, `${instanceLocation}/${j}`, keywordLocation);
+          if (result.valid) {
+            evaluated[j] = true;
+            contained++;
+          } else {
+            errors.push(...result.errors);
+          }
+        }
+        if (contained >= ($minContains || 0)) {
+          errors.length = errorsLength;
+        }
+        if ($minContains === undefined && $maxContains === undefined && contained === 0) {
+          errors.splice(errorsLength, 0, {
+            instanceLocation,
+            keyword: "contains",
+            keywordLocation,
+            error: `Array does not contain item matching schema.`
+          });
+        } else if ($minContains !== undefined && contained < $minContains) {
+          errors.push({
+            instanceLocation,
+            keyword: "minContains",
+            keywordLocation: `${schemaLocation}/minContains`,
+            error: `Array must contain at least ${$minContains} items matching schema. Only ${contained} items were found.`
+          });
+        } else if ($maxContains !== undefined && contained > $maxContains) {
+          errors.push({
+            instanceLocation,
+            keyword: "maxContains",
+            keywordLocation: `${schemaLocation}/maxContains`,
+            error: `Array may contain at most ${$maxContains} items matching schema. ${contained} items were found.`
+          });
+        }
+      }
+    }
+    if (!stop && $unevaluatedItems !== undefined) {
+      const keywordLocation = `${schemaLocation}/unevaluatedItems`;
+      for (i;i < length; i++) {
+        if (evaluated[i]) {
+          continue;
+        }
+        const result = validate(instance[i], $unevaluatedItems, draft, lookup, shortCircuit, recursiveAnchor, `${instanceLocation}/${i}`, keywordLocation);
+        evaluated[i] = true;
+        if (!result.valid) {
+          errors.push({
+            instanceLocation,
+            keyword: "unevaluatedItems",
+            keywordLocation,
+            error: `Items did not match unevaluated items schema.`
+          }, ...result.errors);
+        }
+      }
+    }
+    if ($uniqueItems) {
+      for (let j = 0;j < length; j++) {
+        const a = instance[j];
+        const ao = typeof a === "object" && a !== null;
+        for (let k = 0;k < length; k++) {
+          if (j === k) {
+            continue;
+          }
+          const b = instance[k];
+          const bo = typeof b === "object" && b !== null;
+          if (a === b || ao && bo && deepCompareStrict(a, b)) {
+            errors.push({
+              instanceLocation,
+              keyword: "uniqueItems",
+              keywordLocation: `${schemaLocation}/uniqueItems`,
+              error: `Duplicate items at indexes ${j} and ${k}.`
+            });
+            j = Number.MAX_SAFE_INTEGER;
+            k = Number.MAX_SAFE_INTEGER;
+          }
+        }
+      }
+    }
+  } else if (instanceType === "number") {
+    if (draft === "4") {
+      if ($minimum !== undefined && ($exclusiveMinimum === true && instance <= $minimum || instance < $minimum)) {
+        errors.push({
+          instanceLocation,
+          keyword: "minimum",
+          keywordLocation: `${schemaLocation}/minimum`,
+          error: `${instance} is less than ${$exclusiveMinimum ? "or equal to " : ""} ${$minimum}.`
+        });
+      }
+      if ($maximum !== undefined && ($exclusiveMaximum === true && instance >= $maximum || instance > $maximum)) {
+        errors.push({
+          instanceLocation,
+          keyword: "maximum",
+          keywordLocation: `${schemaLocation}/maximum`,
+          error: `${instance} is greater than ${$exclusiveMaximum ? "or equal to " : ""} ${$maximum}.`
+        });
+      }
+    } else {
+      if ($minimum !== undefined && instance < $minimum) {
+        errors.push({
+          instanceLocation,
+          keyword: "minimum",
+          keywordLocation: `${schemaLocation}/minimum`,
+          error: `${instance} is less than ${$minimum}.`
+        });
+      }
+      if ($maximum !== undefined && instance > $maximum) {
+        errors.push({
+          instanceLocation,
+          keyword: "maximum",
+          keywordLocation: `${schemaLocation}/maximum`,
+          error: `${instance} is greater than ${$maximum}.`
+        });
+      }
+      if ($exclusiveMinimum !== undefined && instance <= $exclusiveMinimum) {
+        errors.push({
+          instanceLocation,
+          keyword: "exclusiveMinimum",
+          keywordLocation: `${schemaLocation}/exclusiveMinimum`,
+          error: `${instance} is less than ${$exclusiveMinimum}.`
+        });
+      }
+      if ($exclusiveMaximum !== undefined && instance >= $exclusiveMaximum) {
+        errors.push({
+          instanceLocation,
+          keyword: "exclusiveMaximum",
+          keywordLocation: `${schemaLocation}/exclusiveMaximum`,
+          error: `${instance} is greater than or equal to ${$exclusiveMaximum}.`
+        });
+      }
+    }
+    if ($multipleOf !== undefined) {
+      const remainder = instance % $multipleOf;
+      if (Math.abs(0 - remainder) >= 0.00000011920929 && Math.abs($multipleOf - remainder) >= 0.00000011920929) {
+        errors.push({
+          instanceLocation,
+          keyword: "multipleOf",
+          keywordLocation: `${schemaLocation}/multipleOf`,
+          error: `${instance} is not a multiple of ${$multipleOf}.`
+        });
+      }
+    }
+  } else if (instanceType === "string") {
+    const length = $minLength === undefined && $maxLength === undefined ? 0 : ucs2length(instance);
+    if ($minLength !== undefined && length < $minLength) {
+      errors.push({
+        instanceLocation,
+        keyword: "minLength",
+        keywordLocation: `${schemaLocation}/minLength`,
+        error: `String is too short (${length} < ${$minLength}).`
+      });
+    }
+    if ($maxLength !== undefined && length > $maxLength) {
+      errors.push({
+        instanceLocation,
+        keyword: "maxLength",
+        keywordLocation: `${schemaLocation}/maxLength`,
+        error: `String is too long (${length} > ${$maxLength}).`
+      });
+    }
+    if ($pattern !== undefined && !new RegExp($pattern, "u").test(instance)) {
+      errors.push({
+        instanceLocation,
+        keyword: "pattern",
+        keywordLocation: `${schemaLocation}/pattern`,
+        error: `String does not match pattern.`
+      });
+    }
+    if ($format !== undefined && format[$format] && !format[$format](instance)) {
+      errors.push({
+        instanceLocation,
+        keyword: "format",
+        keywordLocation: `${schemaLocation}/format`,
+        error: `String does not match format "${$format}".`
+      });
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+// node_modules/@cfworker/json-schema/dist/esm/validator.js
+class Validator {
+  schema;
+  draft;
+  shortCircuit;
+  lookup;
+  constructor(schema, draft = "2019-09", shortCircuit = true) {
+    this.schema = schema;
+    this.draft = draft;
+    this.shortCircuit = shortCircuit;
+    this.lookup = dereference(schema);
+  }
+  validate(instance) {
+    return validate(instance, this.schema, this.draft, this.lookup, this.shortCircuit);
+  }
+  addSchema(schema, id) {
+    if (id) {
+      schema = { ...schema, $id: id };
+    }
+    dereference(schema, this.lookup);
+  }
 }
 
 // node_modules/beautiful-mermaid/src/text-metrics.ts
@@ -19121,7 +20178,7 @@ function renderMermaidASCII(text, options = {}) {
   }
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/items/drawings.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/items/drawings.ts
 var kinds2 = { files: "Files", api: "API", diff: "Diff", table: "Data", diagram: "Diagram", example: "Example" };
 var changeWords = { add: "added", edit: "edited", remove: "removed" };
 var diagramKinds = { graph: "flowchart", flowchart: "flowchart", sequenceDiagram: "sequence", stateDiagram: "state", "stateDiagram-v2": "state", classDiagram: "class", erDiagram: "entities", "xychart-beta": "chart" };
@@ -19279,8 +20336,8 @@ function drawnDiagram(mermaid) {
 `);
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/items/markdown.ts
-var format = 7;
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/items/markdown.ts
+var format2 = 7;
 function authorOf({ session, agent }) {
   return { session, ...agent === undefined ? {} : { agent } };
 }
@@ -19803,7 +20860,7 @@ function parsePerson(id, text) {
   return { notes, answers, lastRead: field(fields, "lastRead", what, isCount) - 1 };
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/items/store.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/items/store.ts
 function storeIn(dataFolder, disk) {
   return { folder: dataFolder, items: `${dataFolder}/items`, revisions: `${dataFolder}/revisions`, person: `${dataFolder}/person`, changed: `${dataFolder}/changed`, deliveringSince: `${dataFolder}/delivering-since`, disk };
 }
@@ -19832,10 +20889,10 @@ function revisionPath(store, id, index) {
 function personPath(store, id) {
   return `${store.person}/${id}.md`;
 }
-async function storedFiles(store, folder) {
+async function storedFiles(store, folder, extension = ".md") {
   if (!await store.disk.exists(folder))
     return [];
-  return (await store.disk.list(folder)).filter((entry) => entry.isFile && entry.name.endsWith(".md")).map((entry) => ({ id: entry.name.slice(0, -".md".length), name: entry.name, stamp: `${entry.modifiedAt}:${entry.size}` }));
+  return (await store.disk.list(folder)).filter((entry) => entry.isFile && entry.name.endsWith(extension)).map((entry) => ({ id: entry.name.slice(0, -extension.length), name: entry.name, stamp: `${entry.modifiedAt}:${entry.size}` }));
 }
 async function storedIn(store, path) {
   try {
@@ -19860,9 +20917,10 @@ async function storedItem(store, id) {
 async function storedPerson(store, id) {
   return parsePerson(id, await store.disk.read(personPath(store, id)));
 }
-async function readFresh(store, folder, known, read) {
-  const [files, last] = await Promise.all([storedFiles(store, folder), known.size === 0 ? undefined : lastWritten(store)]);
-  const fresh = files.filter(({ id, stamp }) => id === last || known.get(id) !== stamp);
+async function readFresh(store, folder, known, read, { changedPrefix = "", extension = ".md", isWanted = () => true } = {}) {
+  const [stored, last] = await Promise.all([storedFiles(store, folder, extension), known.size === 0 ? undefined : lastWritten(store)]);
+  const files = stored.filter(({ id }) => isWanted(id));
+  const fresh = files.filter(({ id, stamp }) => `${changedPrefix}${id}` === last || known.get(id) !== stamp);
   const values = await Promise.all(fresh.map(({ id }) => read(id).then((value) => ({ id, value }), (error) => ({ id, reason: reasonOf(error) }))));
   return {
     read: values.flatMap((each) => ("value" in each) ? [[each.id, each.value]] : []),
@@ -19989,7 +21047,405 @@ function newId(title, taken) {
       return `${slug}-${index}`;
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/actions.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/goals/markdown.ts
+var sources = ["prompt", "answer", "view"];
+var states = ["planned", "active", "done", "dropped"];
+var isTexts = (value) => Array.isArray(value) && value.every(isText);
+function quoteText({ words, ...quote }, name) {
+  return [heading(3, name, quote), quoted(words)];
+}
+function goalsMarkdown(goals) {
+  return documentText({ format: goals.format, session: goals.session, project: goals.project, updatedAt: goals.updatedAt }, [
+    ...goals.requirements.flatMap(({ quotes, ...requirement }) => [heading(2, "requirement", requirement), ...quotes.flatMap((quote) => quoteText(quote, "quote"))]),
+    ...goals.filings.map((filing) => heading(2, "filing", filing)),
+    ...goals.tasks.flatMap(({ corrections, ...task }) => [heading(2, "task", task), ...corrections.flatMap((quote) => quoteText(quote, "correction"))])
+  ]);
+}
+function optional(attributes, key, what, isValid) {
+  return attributes[key] === undefined ? {} : { [key]: field(attributes, key, what, isValid) };
+}
+function quoteOf(attributes, words, what) {
+  if (words === undefined)
+    throw new Error(`${what} holds no quoted words.`);
+  return { words, source: field(attributes, "source", what, (value) => sources.includes(value)), id: field(attributes, "id", what, isText), at: field(attributes, "at", what, isText) };
+}
+function filingOf(attributes, what) {
+  const id = field(attributes, "id", what, isText);
+  const source = field(attributes, "source", what, (value) => sources.includes(value));
+  if (attributes["reason"] !== undefined)
+    return { id, source, reason: field(attributes, "reason", what, isText) };
+  return { id, source, requirements: field(attributes, "requirements", what, isTexts) };
+}
+function taskOf(attributes, what, corrections) {
+  const state = field(attributes, "state", what, (value) => states.includes(value));
+  const held = (key, isValid, kind) => {
+    if (attributes[key] === undefined)
+      throw new Error(`${what} has no ${key}, which every ${kind} task holds.`);
+    return field(attributes, key, what, isValid);
+  };
+  const fields = {
+    id: field(attributes, "id", what, isText),
+    title: field(attributes, "title", what, isText),
+    serves: field(attributes, "serves", what, isTexts),
+    ...optional(attributes, "after", what, isText),
+    ...optional(attributes, "waitsOn", what, isText),
+    ...optional(attributes, "cmodTask", what, isText),
+    ...field(attributes, "isRequired", what, (value) => typeof value === "boolean") ? { template: held("template", isText, "required"), isRequired: true } : { ...optional(attributes, "template", what, isText), isRequired: false },
+    corrections
+  };
+  if (state === "planned")
+    return { ...fields, state };
+  if (state === "active")
+    return { ...fields, state, owner: held("owner", isText, state), startedAt: held("startedAt", isText, state) };
+  if (state === "done")
+    return { ...fields, state, owner: held("owner", isText, state), startedAt: held("startedAt", isText, state), evidence: held("evidence", isTexts, state), endedAt: held("endedAt", isText, state) };
+  return { ...fields, state, ...optional(attributes, "owner", what, isText), ...optional(attributes, "startedAt", what, isText), reason: held("reason", isText, state), endedAt: held("endedAt", isText, state) };
+}
+function parseGoals(session, text) {
+  const what = `goals/${session}.md`;
+  const { fields, body } = documentOf(text, what);
+  const { lead, sections } = sectionsOf(tokensOf(body));
+  if (lead.some((token) => !("line" in token) || token.line !== ""))
+    throw new Error(`${what} holds text above its first heading.`);
+  const requirements = [];
+  const filings = [];
+  const tasks = [];
+  let quotes;
+  let corrections;
+  sections.forEach((section, index) => {
+    const where = `${what} heading ${index + 1}, ${JSON.stringify(section.name)},`;
+    const words = wordsOf(section.body, where);
+    const quoted = section.level !== 3 ? undefined : section.name === "quote" ? quotes : section.name === "correction" ? corrections : undefined;
+    if (quoted !== undefined) {
+      quoted.push(quoteOf(section.attributes, words, where));
+      return;
+    }
+    if (section.level !== 2)
+      throw new Error(`${where} is a quote under no requirement or a correction under no task.`);
+    if (words !== undefined)
+      throw new Error(`${where} holds text, and only a quote or a correction does.`);
+    quotes = section.name === "requirement" ? [] : undefined;
+    corrections = section.name === "task" ? [] : undefined;
+    if (quotes !== undefined)
+      requirements.push({ id: field(section.attributes, "id", where, isText), capability: field(section.attributes, "capability", where, isText), line: field(section.attributes, "line", where, isText), quotes });
+    else if (corrections !== undefined)
+      tasks.push(taskOf(section.attributes, where, corrections));
+    else if (section.name === "filing")
+      filings.push(filingOf(section.attributes, where));
+    else
+      throw new Error(`${where} is no requirement, filing, or task.`);
+  });
+  const fileSession = field(fields, "session", what, isText);
+  if (fileSession !== session)
+    throw new Error(`${what} names the session ${fileSession}.`);
+  return { format: field(fields, "format", what, (value) => value === 1), session, project: field(fields, "project", what, isText), requirements, filings, tasks, updatedAt: field(fields, "updatedAt", what, isText) };
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/goals/store.ts
+class Invalid extends Error {
+}
+function validateSession(session) {
+  if (!/^[\w-]+$/.test(session))
+    throw new Invalid(`${JSON.stringify(session)} is not a session id, which holds only letters, digits, - and _.`);
+  return session;
+}
+var goalsFolder = (store) => `${store.folder}/goals`;
+var goalsId = (session) => `goals/${session}`;
+function goalsPath(store, session) {
+  return `${goalsFolder(store)}/${validateSession(session)}.md`;
+}
+async function storedGoals(store, session) {
+  const path = goalsPath(store, session);
+  return await store.disk.exists(path) ? parseGoals(session, await store.disk.read(path)) : undefined;
+}
+async function readGoals(store, known = new Map, isWanted) {
+  const { read, unreadable, stamps } = await readFresh(store, goalsFolder(store), known, async (session) => parseGoals(session, await store.disk.read(goalsPath(store, session))), { changedPrefix: "goals/", isWanted });
+  return { goals: read.map(([, goals]) => goals), unreadable, stamps };
+}
+function reworded(name, fresh, stored, wordsOf) {
+  const before = new Map(stored.map((each) => [each.id, wordsOf(each)]));
+  return fresh.flatMap((each) => {
+    const was = before.get(each.id) ?? {};
+    const changed = Object.entries(wordsOf(each)).filter(([key, words]) => words !== undefined && JSON.stringify(words) !== JSON.stringify(was[key]));
+    return changed.length === 0 ? [] : [heading(2, name, { id: each.id, ...Object.fromEntries(changed) })];
+  });
+}
+function addedWords(goals, stored) {
+  return [
+    ...reworded("requirement", goals.requirements, stored?.requirements ?? [], ({ capability, line }) => ({ capability, line })),
+    ...reworded("filing", goals.filings, stored?.filings ?? [], (each) => ("reason" in each) ? { reason: each.reason } : {}),
+    ...reworded("task", goals.tasks, stored?.tasks ?? [], (each) => ({ title: each.title, evidence: "evidence" in each ? each.evidence : undefined, reason: "reason" in each ? each.reason : undefined }))
+  ];
+}
+var lockMs = 1e4;
+var lockRetryMs = 20;
+var isStale = (modifiedAt) => Date.now() - modifiedAt > lockMs;
+async function brokeStale(lock, path) {
+  const tokens = await lock.tokens(path);
+  const stamps = tokens.length === 0 ? [await lock.heldSince(path)] : tokens.map((each) => each.modifiedAt);
+  if (stamps.some((stamp) => stamp !== undefined && !isStale(stamp)))
+    return false;
+  for (const token of tokens)
+    if (!await lock.remove(`${path}/${token.name}`))
+      return true;
+  await lock.remove(path);
+  return true;
+}
+async function released(lock, path, token) {
+  try {
+    if (await lock.remove(`${path}/${token}`))
+      return await lock.remove(path) ? undefined : `rm could not remove the lock ${path}, so the next write waits until it is ${lockMs / 1000} s old.`;
+    if ((await lock.tokens(path)).some((each) => each.name === token))
+      return `rm could not remove the token ${token} from the lock ${path}, so the next write waits until it is ${lockMs / 1000} s old.`;
+    return `This write held the lock ${path} over ${lockMs / 1000} s, so another writer broke it as stale, and that writer's write can have replaced this one.`;
+  } catch (error) {
+    return `The lock ${path} could not be released: ${reasonOf(error)}`;
+  }
+}
+async function locked(store, lock, session, told, write) {
+  const path = `${goalsPath(store, session)}.lock`;
+  const token = Math.random().toString(36).slice(2);
+  await lock.makeFolder(goalsFolder(store));
+  const since = Date.now();
+  while (!await lock.take(path, token)) {
+    if (Date.now() - since > 2 * lockMs)
+      throw new Error(`The lock ${path} could not be taken in ${2 * lockMs / 1000} s, though a lock older than ${lockMs / 1000} s is broken, so the goals of session ${session} stay as they were.`);
+    if (!await brokeStale(lock, path))
+      await lock.wait(lockRetryMs);
+  }
+  const done = await write().catch(async (error) => {
+    await released(lock, path, token);
+    throw error;
+  });
+  const warning = await released(lock, path, token);
+  if (warning !== undefined)
+    told.push(`The goals of session ${session} were written. ${warning}`);
+  return done;
+}
+async function updateGoals(store, lock, session, change, told, check) {
+  if (check !== undefined) {
+    const stored = await storedGoals(store, session);
+    const added = addedWords(change(stored), stored);
+    if (added.length > 0)
+      await check(goalsId(session), documentText({ session }, added));
+  }
+  return locked(store, lock, session, told, () => inWriteTurn(store, async () => {
+    const goals = { ...change(await storedGoals(store, session)), updatedAt: new Date().toISOString() };
+    await save(store, goalsPath(store, session), goalsId(session), goalsMarkdown(goals), goals.updatedAt);
+    return goals;
+  }));
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/goals/progress.ts
+var line = (description) => ({ type: "string", pattern: "\\S", description });
+var label = line('What the block measures, in a few words, such as "Tests" or "Live check".');
+var block = {
+  oneOf: [
+    {
+      type: "object",
+      description: 'A bar that fills done of total, drawn as "Tests ███░░ 121 of 164".',
+      properties: {
+        kind: { const: "bar" },
+        label,
+        done: { type: "number", minimum: 0, description: "How many are done, at most total." },
+        total: { type: "number", exclusiveMinimum: 0, description: "How many there are." }
+      },
+      required: ["kind", "label", "done", "total"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      description: "A checklist: one ☑ or ☐ row per check.",
+      properties: {
+        kind: { const: "checklist" },
+        label,
+        items: {
+          type: "array",
+          minItems: 1,
+          items: { type: "object", properties: { text: line('The check, such as "answer sends".'), done: { type: "boolean" } }, required: ["text", "done"], additionalProperties: false }
+        }
+      },
+      required: ["kind", "label", "items"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      description: `A note: one finding or status the user should see, such as "Bun's stream stalls on writes over 2 MB."`,
+      properties: { kind: { const: "note" }, text: line("The note, in one or two plain sentences.") },
+      required: ["kind", "text"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      description: "A table: a header row of columns, then each row with one cell per column. The view cuts a cell that does not fit.",
+      properties: {
+        kind: { const: "table" },
+        label,
+        columns: { type: "array", minItems: 1, items: line("A column name.") },
+        rows: { type: "array", items: { type: "array", items: { type: "string" }, description: "One cell per column, in the columns' order." } }
+      },
+      required: ["kind", "columns", "rows"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      description: "The steps preset: steps in order, those before current ☑, current in bold, those after it dim.",
+      properties: {
+        preset: { const: "steps" },
+        label,
+        steps: { type: "array", minItems: 1, items: line('One step, such as "Build".') },
+        current: { type: "integer", minimum: 0, description: "The step under way, counted from 0. The number of steps means every step is done." }
+      },
+      required: ["preset", "steps", "current"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      description: "The tasks preset: each task ☑ when done, in bold while active, dim while planned.",
+      properties: {
+        preset: { const: "tasks" },
+        label,
+        tasks: {
+          type: "array",
+          minItems: 1,
+          items: { type: "object", properties: { text: line("The task."), state: { type: "string", enum: ["planned", "active", "done"] } }, required: ["text", "state"], additionalProperties: false }
+        }
+      },
+      required: ["preset", "tasks"],
+      additionalProperties: false
+    }
+  ]
+};
+var progressInput = {
+  type: "object",
+  properties: { blocks: { type: "array", items: block, description: "Every block of this session's progress, in the order the user reads them. They replace the blocks set before, and an empty list clears them." } },
+  required: ["blocks"],
+  additionalProperties: false
+};
+var validator = new Validator(progressInput, "2020-12", false);
+function problemOf(block) {
+  if ("preset" in block)
+    return block.preset === "steps" && block.current > block.steps.length ? `a steps preset whose current step, ${block.current}, is above the number of steps, ${block.steps.length}` : undefined;
+  if (block.kind === "bar")
+    return block.done > block.total ? `a bar whose done, ${block.done}, is above its total, ${block.total}` : undefined;
+  if (block.kind !== "table")
+    return;
+  const uneven = block.rows.findIndex((row) => row.length !== block.columns.length);
+  return uneven === -1 ? undefined : `a table whose row ${uneven + 1} holds ${block.rows[uneven]?.length} cells, not one for each of its ${block.columns.length} columns`;
+}
+function validateBlocks(blocks) {
+  const { valid, errors } = validator.validate({ blocks });
+  if (!valid)
+    throw new Invalid(`The blocks are not valid:
+${errors.map((error) => `- ${error.instanceLocation}: ${error.error}`).join(`
+`)}`);
+  const checked = blocks;
+  for (const [index, each] of checked.entries()) {
+    const problem = problemOf(each);
+    if (problem !== undefined)
+      throw new Invalid(`Block ${index + 1} is ${problem}.`);
+  }
+  return checked;
+}
+var progressFolder = (store) => `${store.folder}/progress`;
+function progressPath(store, session) {
+  return `${progressFolder(store)}/${session}.json`;
+}
+function parseProgress(session, text) {
+  const stored = JSON.parse(text);
+  if (!isObject2(stored) || stored["session"] !== session || typeof stored["at"] !== "string")
+    throw new Error(`it does not hold the progress of the session ${session}`);
+  return { session, blocks: validateBlocks(stored["blocks"]), at: stored["at"] };
+}
+async function storedProgress(store, session) {
+  const path = progressPath(store, session);
+  return await store.disk.exists(path) ? parseProgress(session, await store.disk.read(path)) : undefined;
+}
+async function setProgress(store, rename, session, blocks) {
+  const progress = { session: validateSession(session), blocks: validateBlocks(blocks), at: new Date().toISOString() };
+  const path = progressPath(store, session);
+  const partial = `${path}.${Math.random().toString(36).slice(2)}.tmp`;
+  await store.disk.write(partial, `${JSON.stringify(progress)}
+`);
+  await rename(partial, path);
+  return progress;
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/items/heard.ts
+function marksIn(heard, id, start) {
+  const known = heard[id];
+  if (known === undefined)
+    return { item: { at: start, count: 0 }, person: { at: start, count: 0 } };
+  return "at" in known ? { item: known, person: known } : known;
+}
+function noteLines(answer) {
+  return (answer.corrections ?? []).map((each) => `- ${each.target}${each.revision === answer.revision ? "" : ` (written on revision ${revisionNumber(each.revision)})`}: "${each.words}"`);
+}
+function messageOf2(item, answer, number) {
+  const named = `"${item.revisions[answer.revision]?.content.title ?? current2(item).title}" (${item.id}), answer ${number}`;
+  const words = answer.words === undefined ? "" : `: "${answer.words}"`;
+  const withNotes = (said) => answer.corrections === undefined || answer.corrections.length === 0 ? said : [`${said}, with these notes:`, ...noteLines(answer), "Apply them as you go."].join(`
+`);
+  if (answer.kind === "approve")
+    return withNotes(`Inbox: the user approved the proposal ${named}${words}`);
+  if (answer.kind === "reject")
+    return [withNotes(`Inbox: the user rejected ${item.kind === "options" ? "every option in" : `the ${item.kind}`} ${named}`), `To resubmit it, revise it with the inbox's revise tool, which reopens it for the user. Never file it again as a new item.`].join(`
+`);
+  if (answer.kind === "option")
+    return withNotes(`Inbox: the user picked "${answer.option ?? ""}" in ${named}${words}`);
+  if (answer.kind === "answer")
+    return withNotes(`Inbox: the user answered ${named}${words}`);
+  if (answer.kind === "acknowledge")
+    return withNotes(`Inbox: the user marked the report ${named} done${words}`);
+  return [`Inbox: the user requested changes to ${named}:`, ...noteLines(answer), `Revise it with the inbox's revise tool, which keeps the item open for the user.`].join(`
+`);
+}
+function answerWords(item, answer, number) {
+  const words = [answer.words, ...(answer.corrections ?? []).map((each) => each.words)].filter((each) => each !== undefined && each.trim() !== "").join(`
+`);
+  return words === "" ? undefined : { id: `${item.id}#${number}`, words };
+}
+function isPlainDone(answer) {
+  return answer.kind === "acknowledge" && answer.words === undefined && (answer.corrections ?? []).length === 0;
+}
+function toldOf(item, person, session, senders, isFiling) {
+  const revised = item.revisions.flatMap((revision, index) => index === 0 || revision.session === session ? [] : [{ kind: "note", file: "item", at: revision.at, text: `${senderOf2(revision, item.project, senders).title} revised "${revision.content.title}" (${item.id}) in the inbox.` }]);
+  const answered = person.answers.flatMap((answer, index) => {
+    if (isPlainDone(answer))
+      return [];
+    const words = isFiling ? answerWords(item, answer, index + 1) : undefined;
+    const text = [messageOf2(item, answer, index + 1), ...words === undefined ? [] : [`The user's words in this answer wait to be filed. Call mcp__inbox__file with prompt ${words.id}.`]].join(`
+`);
+    return [{ kind: "prompt", file: "person", at: answer.at, text, ...words === undefined ? {} : { answer: words } }];
+  });
+  const { withdrawal } = item;
+  const withdrawn = withdrawal === undefined || withdrawal.by.session === session ? [] : [{ kind: "note", file: "item", at: withdrawal.at, text: `${senderOf2(withdrawal.by, item.project, senders).title} withdrew "${current2(item).title}" (${item.id}) from the inbox: ${withdrawal.words}` }];
+  return [...revised, ...answered, ...withdrawn].sort((a, b) => a.at.localeCompare(b.at));
+}
+function isAfter(mark, told, earlier) {
+  return told.at > mark.at || told.at === mark.at && earlier.filter((each) => each.file === told.file && each.at === mark.at).length >= mark.count;
+}
+function unheard(item, person, session, marks, senders, isFiling) {
+  const subscriber = item.subscribers.find((each) => each.session === session);
+  if (subscriber === undefined)
+    return [];
+  const told = toldOf(item, person, session, senders, isFiling).filter((each) => each.at >= subscriber.since);
+  return told.filter((each, index) => isAfter(marks[each.file], each, told.slice(0, index)));
+}
+function advanced(heard, id, told, start) {
+  const marks = marksIn(heard, id, start);
+  const mark = marks[told.file];
+  return { ...heard, [id]: { ...marks, [told.file]: mark.at === told.at ? { at: told.at, count: mark.count + 1 } : { at: told.at, count: 1 } } };
+}
+function isUnheard(item, person, senders) {
+  const sent = person.answers.at(-1);
+  return sent !== undefined && !isPlainDone(sent) && !isFollowed(item, senders);
+}
+function unfollowedWarning(item) {
+  return { message: `No running session follows "${current2(item).title}"`, description: "Your answer is kept with the item, and reaches its session when it resumes." };
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/actions.ts
 function author() {
   const { id, agentType } = sessions.current;
   return { session: id, ...agentType === undefined ? {} : { agent: agentType } };
@@ -20026,16 +21482,68 @@ async function learnRepositories(mod, projects) {
   const learned = await Promise.all(fresh.map(async (project) => [project, await repositoryOf(process.run, project, (line) => mod.log(line))]));
   mod.state.memory.repositories = { ...mod.state.memory.repositories, ...Object.fromEntries(learned) };
 }
+async function goalTextsOf(mod, listed) {
+  const texts = await Promise.all(listed.map((each) => each.goal.text().then((text) => [[each.id, text]], (error) => {
+    mod.log(`could not read the goal of session ${each.id}: ${messageOf(error)}`);
+    return [];
+  })));
+  return Object.fromEntries(texts.flat());
+}
 var learning = new WeakMap;
-function learnSenders(mod) {
+function learnSessions(mod) {
   const running = learning.get(mod);
   if (running !== undefined)
     return running;
-  const learned = sessions.list({ everyProject: true }).then((listed) => {
-    mod.state.memory.senders = sendersFor(mod.state.memory.items, sendersOf(listed));
-  }).catch((error) => mod.log(`could not list the sessions, so items keep the session titles read before: ${messageOf(error)}`)).finally(() => learning.delete(mod));
+  const learned = sessions.list({ everyProject: true }).then(async (listed) => {
+    const listedSenders = sendersOf(listed);
+    mod.state.memory.senders = { ...listedSenders, ...sendersFor(mod.state.memory.items, listedSenders) };
+    const runningSessions = listed.filter((each) => each.isRunning);
+    const [texts] = await Promise.all([goalTextsOf(mod, runningSessions.filter((each) => mod.state.memory.goalTexts[each.id] === undefined)), loadGoals(mod, false)]);
+    const runningIds = new Set(runningSessions.map((each) => each.id));
+    mod.state.memory.goalTexts = { ...texts, ...Object.fromEntries(Object.entries(mod.state.memory.goalTexts).filter(([session]) => runningIds.has(session))) };
+  }).catch((error) => mod.log(`could not list the sessions, so items keep the session titles and goals read before: ${messageOf(error)}`)).finally(() => learning.delete(mod));
   learning.set(mod, learned);
   return learned;
+}
+async function rereadGoalText(mod, session) {
+  if (mod.state.memory.goalTexts[session] === undefined)
+    return;
+  const texts = await goalTextsOf(mod, [await sessions.get(session)]);
+  if (mod.state.memory.goalTexts[session] !== undefined)
+    mod.state.memory.goalTexts = { ...mod.state.memory.goalTexts, ...texts };
+}
+var surfaced = new WeakMap;
+function hasSurfaces(mod) {
+  const known = surfaced.get(mod);
+  if (known !== undefined)
+    return known;
+  const read = sessions.current.surfaces().then((shown) => shown.length > 0, (error) => {
+    mod.log(`could not read which Claude apps show this session, so it files none of the user's words, refuses no stop, and never starts the inbox program: ${messageOf(error)}`);
+    return false;
+  });
+  surfaced.set(mod, read);
+  return read;
+}
+function hearGoalChanges(mod, program) {
+  let heard = [];
+  const reread = ({ session }) => rereadGoalText(mod, session).catch((error) => mod.log(`could not reread the goal of session ${session}: ${messageOf(error)}`));
+  const listen = async () => {
+    const found = await providers("cmod/Sessions");
+    for (const each of heard)
+      each.remove();
+    heard = found.map((provider) => provider.onChange({ part: "goal" }, reread));
+  };
+  const listenHere = async () => {
+    if (!await hasSurfaces(mod))
+      return;
+    const own = await program.provider("inbox/Goals");
+    own.onChange({ part: "goal" }, reread);
+  };
+  const failed = (error) => mod.log(`could not hear the goal changes of other sessions, so each keeps the goal text read when it was first listed running: ${messageOf(error)}`);
+  return providers("cmod/Providers").then(async ([watch]) => {
+    watch?.onChange({ interface: "cmod/Sessions" }, () => listen().catch(failed));
+    await Promise.all([listen(), listenHere()]);
+  }).catch(failed);
 }
 var readers = new WeakMap;
 function readerIn(mod) {
@@ -20052,16 +21560,204 @@ async function remembered(mod, fresh) {
   mod.state.memory.person = Object.fromEntries(Object.entries({ ...mod.state.memory.person, ...fresh.person }).filter(([id]) => !fresh.gone.person.includes(id)));
   await learnRepositories(mod, [sessions.current.project, ...fresh.items.map((item) => item.project)]);
   if (isUnnamed(mod.state.memory.items, mod.state.memory.senders))
-    learnSenders(mod);
+    learnSessions(mod);
   for (const line of fresh.skipped)
     mod.log(`skipped ${line}`);
   deliver(mod);
 }
+function newest(known, fresh, at) {
+  const kept = { ...known };
+  for (const each of fresh) {
+    const before = kept[each.session];
+    if (before === undefined || at(before) <= at(each))
+      kept[each.session] = each;
+  }
+  return kept;
+}
+function rememberProgress(mod, progress) {
+  const known = mod.state.memory.progress;
+  if (progress.session === sessions.current.id && (known?.session !== progress.session || known.at <= progress.at))
+    mod.state.memory.progress = progress;
+}
+function ownsActiveTaskIn(goals) {
+  return goals.tasks.some((task) => task.state === "active" && task.owner === sessions.current.id);
+}
+function rememberGoals(mod, goals, known = mod.state.memory.goals) {
+  const remembered = newest(known, goals, (each) => each.updatedAt);
+  mod.state.memory.goals = remembered;
+  const { takenFrom } = mod.state.session;
+  const kept = takenFrom.filter((session) => {
+    const read = remembered[session];
+    return read === undefined || ownsActiveTaskIn(read);
+  });
+  const taken = Object.values(remembered).filter((each) => each.session !== sessions.current.id && !kept.includes(each.session) && ownsActiveTaskIn(each)).map((each) => each.session);
+  if (kept.length !== takenFrom.length || taken.length > 0)
+    mod.state.session.takenFrom = [...kept, ...taken];
+}
+function loadsFilesOf(mod, session) {
+  return session === sessions.current.id || mod.state.session.takenFrom.includes(session) || mod.state.memory.senders[session]?.isRunning === true;
+}
+var goalStamps = new WeakMap;
+async function loadGoals(mod, isEveryFile) {
+  await copyForkedGoals(mod);
+  const fresh = await readGoals(storeOf(mod), isEveryFile ? undefined : goalStamps.get(mod), (session) => loadsFilesOf(mod, session)).catch((error) => mod.log(`could not read the goals files, so the inbox keeps the goals it read before: ${messageOf(error)}`));
+  if (fresh === undefined)
+    return;
+  goalStamps.set(mod, fresh.stamps);
+  rememberGoals(mod, fresh.goals, isEveryFile ? {} : undefined);
+  for (const { id, reason } of fresh.unreadable)
+    mod.log(`skipped goals/${id}.md, which does not read as goals: ${reason}`);
+}
+async function loadProgress(mod, session) {
+  try {
+    const progress = await storedProgress(storeOf(mod), session);
+    if (progress !== undefined)
+      rememberProgress(mod, progress);
+  } catch (error) {
+    mod.log(`could not read progress/${session}.json, so the inbox keeps the progress it read before: ${messageOf(error)}`);
+  }
+}
+var progressWatches = new WeakMap;
+function followProgress(mod) {
+  const session = sessions.current.id;
+  const path = progressPath(storeOf(mod), session);
+  const followed = progressWatches.get(mod);
+  if (followed?.path !== path) {
+    followed?.watch.remove();
+    progressWatches.set(mod, { path, watch: fs.onChange({ path }, () => loadProgress(mod, session)) });
+  }
+  return loadProgress(mod, session);
+}
 async function load(mod) {
-  await remembered(mod, await readerIn(mod).read());
+  await Promise.all([readerIn(mod).read().then((fresh) => remembered(mod, fresh)), loadGoals(mod, false).then(() => handBackEnded(mod))]);
 }
 async function loadAll(mod) {
-  await remembered(mod, await readerIn(mod).readAll());
+  await Promise.all([readerIn(mod).readAll().then((fresh) => remembered(mod, fresh)), followProgress(mod), loadGoals(mod, true).then(() => handBackEnded(mod))]);
+}
+function goalsIn(mod, session = sessions.current.id) {
+  return mod.state.memory.goals[session];
+}
+function goalTextIn(mod, session = sessions.current.id) {
+  return (mod.state.memory.goalTexts[session] ?? "").trim();
+}
+async function loadGoalsOf(mod, session) {
+  const { goals, unreadable } = await readGoals(storeOf(mod), new Map, (each) => each === session);
+  const [failed] = unreadable;
+  if (failed !== undefined)
+    throw new Error(`goals/${session}.md does not read as goals: ${failed.reason}`);
+  rememberGoals(mod, goals);
+  return goalsIn(mod, session);
+}
+function countsIn(mod, session = sessions.current.id) {
+  return counts(goalsIn(mod, session) ?? emptyGoals(session, ""), mod.state.memory.items, mod.state.memory.person);
+}
+async function ran(argv) {
+  const done = await process.run(argv);
+  if (done.exitCode !== 0)
+    throw new Error(`${argv.join(" ")} exited ${done.exitCode}: ${done.stderr.trim()}`);
+}
+var isRun = async (argv) => (await process.run(argv)).exitCode === 0;
+function lockOf(mod) {
+  return {
+    makeFolder: (path) => ran(["mkdir", "-p", path]),
+    take: async (path, token) => {
+      if (!await isRun(["mkdir", path]))
+        return false;
+      await ran(["touch", `${path}/${token}`]);
+      return true;
+    },
+    heldSince: (path) => fs.stat(path).then((stat) => stat.modifiedAt, async (error) => {
+      if (await fs.exists(path))
+        throw error;
+      return;
+    }),
+    tokens: (path) => fs.list(path).then((entries) => entries.filter((each) => each.isFile), async (error) => {
+      if (await fs.exists(path))
+        throw error;
+      return [];
+    }),
+    remove: (path) => isRun(["rm", "-d", path]),
+    wait: (ms) => new Promise((resolve) => {
+      mod.after(ms, () => resolve());
+    })
+  };
+}
+async function changeGoals(mod, session, update, check, told) {
+  const toasted = [];
+  const goals = await updateGoals(storeOf(mod), lockOf(mod), session, update, told ?? toasted, check);
+  rememberGoals(mod, [goals]);
+  if (session === sessions.current.id && mod.state.session.goalsSession === null)
+    mod.state.session.goalsSession = session;
+  for (const warning of toasted)
+    mod.toast.warning(warning);
+  return goals;
+}
+function withNew(known, copied) {
+  return [...known, ...copied.filter((each) => !known.some((kept) => kept.id === each.id))];
+}
+var forkCopies = new WeakMap;
+function copyForkedGoals(mod) {
+  const parent = mod.state.session.goalsSession;
+  const { id: session, project } = sessions.current;
+  if (parent === null || parent === session)
+    return Promise.resolve();
+  const running = forkCopies.get(mod);
+  if (running !== undefined)
+    return running;
+  const copied = readGoals(storeOf(mod), new Map, (each) => each === parent).then(async ({ goals: [kept], unreadable: [failed] }) => {
+    if (failed !== undefined)
+      throw new Error(`goals/${parent}.md does not read as goals: ${failed.reason}`);
+    if (kept !== undefined) {
+      await changeGoals(mod, session, (fresh) => {
+        const known = fresh ?? emptyGoals(session, project);
+        return { ...known, requirements: withNew(known.requirements, kept.requirements), filings: withNew(known.filings, kept.filings) };
+      });
+    }
+    if (sessions.current.id === session)
+      mod.state.session.goalsSession = session;
+  }).catch((error) => mod.log(`could not copy the requirements of session ${parent} into this fork, so the next load tries again: ${messageOf(error)}`)).finally(() => forkCopies.delete(mod));
+  forkCopies.set(mod, copied);
+  return copied;
+}
+function isHeldBySubagent(task, isEnded) {
+  return task.state === "active" && task.owner === sessions.current.id && task.cmodTask !== undefined && isEnded(task.cmodTask);
+}
+async function handBack(mod, isEnded) {
+  const held = Object.values(mod.state.memory.goals).filter((goals) => goals.tasks.some((task) => isHeldBySubagent(task, isEnded)));
+  await Promise.all(held.map(({ session }) => changeGoals(mod, session, (fresh) => {
+    if (fresh === undefined)
+      throw new Error(`Session ${session} has no goals file, so no task of it returns from a subagent.`);
+    return {
+      ...fresh,
+      tasks: fresh.tasks.map((task) => {
+        if (!isHeldBySubagent(task, isEnded))
+          return task;
+        const { cmodTask, ...kept } = task;
+        return kept;
+      })
+    };
+  })));
+}
+var runningStatuses = ["pending", "running", "waiting", "idle"];
+var isRunningTask = ({ closedAt, status }) => closedAt === undefined && (status === undefined || runningStatuses.includes(status));
+async function runningTasksIn(tasks) {
+  const nested = await Promise.all(tasks.map(async (task) => runningTasksIn(await task.tasks())));
+  return [...tasks.filter(isRunningTask).map((task) => task.id), ...nested.flat()];
+}
+async function handBackEnded(mod) {
+  try {
+    if (!Object.values(mod.state.memory.goals).some((goals) => goals.tasks.some((task) => isHeldBySubagent(task, () => true))))
+      return;
+    const running = new Set(await runningTasksIn(await sessions.current.goal.tasks()));
+    await handBack(mod, (cmodTask) => !running.has(cmodTask));
+  } catch (error) {
+    mod.log(`could not hand back the tasks of subagents that no longer run, so the next load tries again: ${messageOf(error)}`);
+  }
+}
+function addUnfiled(mod, unfiled) {
+  const isKnown = mod.state.session.unfiled.some((each) => each.id === unfiled.id) || (goalsIn(mod)?.filings ?? []).some((each) => each.id === unfiled.id);
+  if (!isKnown)
+    mod.state.session.unfiled = [...mod.state.session.unfiled, unfiled];
 }
 function scoped(mod, scope = mod.state.session.scope) {
   const { id, project } = sessions.current;
@@ -20099,24 +21795,26 @@ var delivering = new WeakMap;
 async function startDelivery(mod) {
   deliveryStarts.set(mod, await deliveryStart(storeOf(mod)));
 }
-function nextUnheard(mod, id, start) {
+function nextUnheard(mod, id, start, isFiling) {
   const item = mod.state.memory.items.find((each) => each.id === id);
   if (item === undefined)
     return;
-  return unheard(item, personIn(mod, item), sessions.current.id, marksIn(mod.state.session.heard, id, start), mod.state.memory.senders)[0];
+  return unheard(item, personIn(mod, item), sessions.current.id, marksIn(mod.state.session.heard, id, start), mod.state.memory.senders, isFiling)[0];
 }
-async function deliverItem(mod, id, sending) {
+async function deliverItem(mod, id, sending, isFiling) {
   const start = deliveryStarts.get(mod);
   if (sending.has(id) || start === undefined)
     return;
   sending.add(id);
   try {
-    for (let told = nextUnheard(mod, id, start);told !== undefined; told = nextUnheard(mod, id, start)) {
+    for (let told = nextUnheard(mod, id, start, isFiling);told !== undefined; told = nextUnheard(mod, id, start, isFiling)) {
       const sentTo = sessions.current.id;
       await sessions.current.send({ type: told.kind === "prompt" ? Prompt : Note, text: told.text });
       if (sessions.current.id !== sentTo)
         return;
       mod.state.session.heard = advanced(mod.state.session.heard, id, told, start);
+      if (told.answer !== undefined)
+        addUnfiled(mod, { id: told.answer.id, source: "answer", text: told.answer.words, at: told.at });
     }
   } catch (error) {
     mod.log(`could not deliver ${id}, so the next load tries again: ${messageOf(error)}`);
@@ -20127,10 +21825,11 @@ async function deliverItem(mod, id, sending) {
 async function deliver(mod) {
   const sending = delivering.get(mod) ?? new Set;
   delivering.set(mod, sending);
-  await Promise.all(mod.state.memory.items.map((item) => deliverItem(mod, item.id, sending)));
+  const isFiling = await hasSurfaces(mod);
+  await Promise.all(mod.state.memory.items.map((item) => deliverItem(mod, item.id, sending, isFiling)));
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/items/tree.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/items/tree.ts
 function letter(index) {
   const own = String.fromCharCode(65 + index % 26);
   return index < 26 ? own : `${letter(Math.floor(index / 26) - 1)}${own}`;
@@ -20430,7 +22129,7 @@ function summaryOf(node) {
   return [...solution === undefined ? [] : [`${headingOf(solution)} · ${titleOf2(solution)}`], counts, ...nested].join(" · ");
 }
 var longestQuote = 60;
-function quoteOf(idea) {
+function quoteOf2(idea) {
   const words = idea.idea.replace(/\s+/g, " ").trim();
   return `"${words.length <= longestQuote ? words : `${words.slice(0, longestQuote - 1).trimEnd()}…`}"`;
 }
@@ -20447,7 +22146,7 @@ function titlePath(content, path) {
     const idea = parts[1] === undefined ? undefined : content.problem.ideas[Number(parts[1].slice(1))];
     if (idea === undefined)
       return named;
-    return parts[2] === "d" && idea.drawing !== undefined ? `${named} › ${drawingLabel(idea.drawing)}` : `${named} › ${quoteOf(idea)}`;
+    return parts[2] === "d" && idea.drawing !== undefined ? `${named} › ${drawingLabel(idea.drawing)}` : `${named} › ${quoteOf2(idea)}`;
   }
   let nodes = rootsOf(content);
   let walked = "";
@@ -20461,7 +22160,7 @@ function titlePath(content, path) {
       const idea = ideasOf2(parent)[Number(part.slice(1))];
       if (idea === undefined)
         return nameOf2(parent);
-      return parts[index + 1] === "d" && idea.drawing !== undefined ? `${nameOf2(parent)} › ${drawingLabel(idea.drawing)}` : `${nameOf2(parent)} › ${quoteOf(idea)}`;
+      return parts[index + 1] === "d" && idea.drawing !== undefined ? `${nameOf2(parent)} › ${drawingLabel(idea.drawing)}` : `${nameOf2(parent)} › ${quoteOf2(idea)}`;
     }
     walked = walked === "" ? part : `${walked}.${part}`;
     const node = nodes.find((each) => each.path === walked);
@@ -20496,7 +22195,7 @@ function withRemoved({ before, revised }, slot, parts, removedPart) {
   return [...parts.flatMap((part, index) => [...removedAt(slot(index)), part]), ...removedAt(slot(parts.length))];
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/items/answers.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/items/answers.ts
 class Moved extends Error {
 }
 
@@ -20563,7 +22262,7 @@ function actionsOf(item, person, { hasNext, isCommenting }) {
   return [...request, ...closing, ...reject, ...comment, ...next];
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/answers.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/answers.ts
 var sending = new Set;
 async function answer2(mod, id, seen, given) {
   if (sending.has(id))
@@ -20702,7 +22401,159 @@ function forget(mod, id) {
   mod.state.session.folds = Object.fromEntries(Object.entries(mod.state.session.folds).filter(([key]) => !key.startsWith(`${id}:`)));
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/links.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/gates.ts
+var checklistTools = /^(TaskCreate|TaskUpdate|TaskList|TaskGet|TodoWrite)$/;
+var checklistRefusal = "Claude Code's checklist is off in this session, because the user reads your tasks in the inbox. Keep them there: mcp__inbox__plan adds tasks, mcp__inbox__start takes one, mcp__inbox__finish ends it with evidence, mcp__inbox__wait waits on the user's answer or on another task, mcp__inbox__drop drops it with the reason, and mcp__inbox__read with your session id lists them.";
+function tasksIn(mod) {
+  const { items, person } = mod.state.memory;
+  return Object.values(mod.state.memory.goals).flatMap((goals) => goals.tasks.map((task) => ({ goals, task, state: shownState(task, goals, items, person) })));
+}
+function placeOf({ goals, task }) {
+  return goals.session === sessions.current.id ? task.id : `${task.id} of session ${goals.session}`;
+}
+function pendingOf(mod, task) {
+  const active = tasksIn(mod).filter((each) => each.state === "active" && each.task.state === "active" && (task === undefined ? each.task.owner === sessions.current.id && each.task.cmodTask === undefined : each.task.cmodTask === task));
+  return { unfiled: task === undefined ? mod.state.session.unfiled : [], active };
+}
+var firstLineLength = 120;
+function firstLineOf(text) {
+  const [line = ""] = text.split(`
+`, 1);
+  return line === text && line.length <= firstLineLength ? text : `${line.slice(0, firstLineLength - 1)}…`;
+}
+function pendingLines({ unfiled, active }) {
+  return [
+    ...unfiled.length === 0 ? [] : [
+      "These words of the user's are not filed into requirements yet:",
+      ...unfiled.map((each) => `- ${each.id}: ${JSON.stringify(firstLineOf(each.text))}`),
+      "File each with mcp__inbox__file: quote the exact words that ask for something into requirements, or give the reason it asks for nothing."
+    ],
+    ...active.length === 0 ? [] : [
+      "These tasks are still active:",
+      ...active.map((each) => `- ${placeOf(each)}: ${each.task.title}`),
+      "End each with mcp__inbox__finish and its evidence, mcp__inbox__wait on the inbox item you asked the user or on another task, or mcp__inbox__drop with the reason. Give session with a task of another session."
+    ]
+  ];
+}
+var stops = new WeakMap;
+function stopAnswer(mod, task, turn) {
+  const known = stops.get(mod) ?? new Map;
+  stops.set(mod, known);
+  const agent = task ?? "";
+  const pending = pendingOf(mod, task);
+  const key = [...pending.unfiled.map((each) => each.id), ...pending.active.map(({ goals, task: each }) => `${goals.session}/${each.id}`)].join(" ");
+  const last = known.get(agent);
+  if (key === "") {
+    known.delete(agent);
+    return;
+  }
+  if (last?.turn === turn && last.pending === key)
+    return;
+  known.set(agent, { turn, pending: key });
+  return { refuse: ["You cannot stop yet.", ...pendingLines(pending), "If you stop again with these left open, that stop passes and they stay open in the inbox."].join(`
+`) };
+}
+var indent = "    ";
+function quotedLines(words) {
+  return words.split(`
+`).map((line) => `${indent}> ${line}`);
+}
+function quoteLines(quote) {
+  return [`${indent}${quote.source} ${quote.id}:`, ...quotedLines(quote.words)];
+}
+function taskLines({ goals, task, state }) {
+  const waiting = state === "waiting on you" ? ` on ${task.waitsOn}` : state === "waiting after" ? ` ${task.after}` : "";
+  const serves = task.serves.length === 0 ? "" : ` (serves ${task.serves.join(", ")})`;
+  const where = goals.session === sessions.current.id ? "" : ` (in session ${goals.session})`;
+  return [`- ${task.id} ${state}${waiting}: ${task.title}${serves}${where}`, ...task.corrections.flatMap((correction) => [`${indent}The user's correction:`, ...quotedLines(correction.words)])];
+}
+async function goalNote(mod, task) {
+  const goal = (await sessions.current.goal.text()).trim();
+  const goals = goalsIn(mod);
+  const requirements = goals?.requirements ?? [];
+  const open = tasksIn(mod).filter((each) => each.goals.session === sessions.current.id ? !isClosed(each.task) : each.task.state === "active" && each.task.owner === sessions.current.id);
+  const unfiled = task === undefined ? mod.state.session.unfiled : [];
+  if (goal === "" && requirements.length === 0 && open.length === 0 && unfiled.length === 0)
+    return;
+  return [
+    "Inbox: this session's goal, the user's requirements in their exact words, and your open tasks.",
+    `Goal: ${goal === "" ? "(none set)" : goal}`,
+    ...requirements.length === 0 ? [] : ["Requirements:", ...requirements.flatMap((each) => [`- ${each.id} ${goals !== undefined && isMet(each, goals) ? "met" : "open"}, ${each.capability}: ${each.line}`, ...each.quotes.flatMap(quoteLines)])],
+    ...open.length === 0 ? [] : ["Open tasks:", ...open.flatMap(taskLines)],
+    ...unfiled.length === 0 ? [] : ["Not filed yet, so file each with mcp__inbox__file:", ...unfiled.map((each) => `- ${each.id}: ${JSON.stringify(each.text)}`)]
+  ].join(`
+`);
+}
+var startLinks = new WeakMap;
+var startKey = (session, task) => `${typeof session === "string" ? session : ""}|${String(task)}`;
+function cmodTaskOf(mod, session, task) {
+  const links = startLinks.get(mod);
+  const key = startKey(session, task);
+  const linked = links?.get(key);
+  links?.delete(key);
+  return linked?.cmodTask;
+}
+function installGates(mod, loaded) {
+  const links = new Map;
+  startLinks.set(mod, links);
+  const noted = async (task, isEveryFile = false) => {
+    await loaded;
+    await (isEveryFile ? loadAll(mod) : loadGoals(mod, false));
+    const note = await goalNote(mod, task);
+    return note === undefined ? undefined : { note };
+  };
+  sessions.current.goal.beforeSessionStart((start) => noted(start.task, start.task === undefined && start.source !== "compact"));
+  sessions.current.goal.beforePrompt((prompt) => prompt.task === undefined ? undefined : noted(prompt.task));
+  sessions.current.goal.beforeToolCall({ name: "mcp__inbox__start" }, (call) => {
+    if (call.task !== undefined)
+      links.set(startKey(call.input["session"], call.input["task"]), { cmodTask: call.task, callId: call.callId });
+  });
+  sessions.current.goal.onToolResult({ name: "mcp__inbox__start" }, (result) => {
+    for (const [key, link] of links)
+      if (link.callId === result.callId)
+        links.delete(key);
+  });
+  sessions.current.goal.onTaskEnd(async (ended) => {
+    for (const [key, link] of links)
+      if (link.cmodTask === ended.id)
+        links.delete(key);
+    await handBack(mod, (cmodTask) => cmodTask === ended.id);
+  });
+  sessions.current.goal.onGoalChange(async (goal) => {
+    mod.state.memory.goalTexts = { ...mod.state.memory.goalTexts, [sessions.current.id]: await goal.text() };
+  });
+  hasSurfaces(mod).then((isShown) => {
+    if (!isShown)
+      return;
+    sessions.current.onPrompt({ from: { type: Person } }, async (prompt) => {
+      if (prompt.text === "")
+        return;
+      addUnfiled(mod, { id: prompt.id, source: "prompt", text: prompt.text, at: prompt.at });
+      await sessions.current.send({ type: Note, text: `Inbox: the user's words in this prompt wait to be filed. Call mcp__inbox__file with prompt ${prompt.id}.` });
+    });
+    sessions.current.goal.beforeTurnEnd((turn) => turn.failure === undefined ? stopAnswer(mod, turn.prompt.task, turn.prompt.id) : undefined);
+    sessions.current.goal.beforeToolCall({ name: checklistTools }, () => ({ refuse: checklistRefusal }));
+  });
+}
+var waiting = new WeakMap;
+function toastWaiting(mod, open, isFirstLoad = false) {
+  const { items, person } = mod.state.memory;
+  const loaded = new Set([sessions.current.id, ...Object.keys(mod.state.memory.goals)].filter((session) => loadsFilesOf(mod, session)));
+  const now = tasksIn(mod).flatMap((each) => {
+    const item = loaded.has(each.goals.session) ? waitingOn(each.task, items, person) : undefined;
+    return item === undefined ? [] : [{ ...each, item }];
+  });
+  const keys = new Map([...loaded].map((session) => [session, new Set(now.flatMap((each) => each.goals.session === session ? [each.task.id] : []))]));
+  const before = isFirstLoad ? keys : waiting.get(mod) ?? keys;
+  waiting.set(mod, keys);
+  for (const { goals, task, item } of now) {
+    if (before.get(goals.session)?.has(task.id) !== false)
+      continue;
+    mod.toast.info(`"${task.title}" waits on you`, { description: current2(item).title, action: { label: "Open", onClick: () => void open(mod, item.id) } });
+  }
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/links.tsx
 function itemLinks(source, items) {
   const prefix = `file://${items}/`;
   return [...source.matchAll(/\]\(([^)\s]+)\)/g)].map(([, href]) => href ?? "").filter((href) => href.startsWith(prefix) && href.endsWith(".md"));
@@ -20722,7 +22573,113 @@ function LinkedBlock({ props, items, onOpen }) {
   });
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/views/file.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/requirements.ts
+function viewQuote(words) {
+  const at = new Date().toISOString();
+  return { words, source: "view", id: `view:${at}`, at };
+}
+async function tell(text, session = sessions.current) {
+  await session.send({ type: await session.turn() === undefined ? Prompt : Note, text });
+}
+function changeOwn(mod, update) {
+  const { id, project } = sessions.current;
+  return changeGoals(mod, id, (fresh) => update(fresh ?? emptyGoals(id, project)));
+}
+function wordsIn(text, what) {
+  const words = text.trim();
+  if (words === "")
+    throw new Error(`${what} needs words.`);
+  return words;
+}
+async function changeGoal(mod, text) {
+  const words = wordsIn(text, "A goal");
+  await sessions.current.goal.update({ text: words });
+  const quote = viewQuote(words);
+  addUnfiled(mod, { id: quote.id, source: "view", text: words, at: quote.at });
+  await tell([`Inbox: the user set this session's goal: ${JSON.stringify(words)}`, `The user's words in this goal wait to be filed. Call mcp__inbox__file with prompt ${quote.id}.`].join(`
+`));
+}
+async function addRequirement(mod, capability, words) {
+  const named = wordsIn(capability, "A requirement's capability");
+  const quote = viewQuote(wordsIn(words, "A requirement"));
+  const goals = await changeOwn(mod, (fresh) => {
+    const id = nextId("r", fresh.requirements);
+    return { ...fresh, requirements: [...fresh.requirements, { id, capability: named, line: quote.words, quotes: [quote] }], filings: [...fresh.filings, { id: quote.id, source: "view", requirements: [id] }] };
+  });
+  const added = goals.requirements.find((each) => each.quotes.some((kept) => kept.id === quote.id))?.id ?? "";
+  await tell(`Inbox: the user added requirement ${added} to ${named}: ${JSON.stringify(quote.words)}`);
+  return goals;
+}
+async function correct(mod, target, words) {
+  const quote = viewQuote(wordsIn(words, "A correction"));
+  const goals = await changeOwn(mod, (fresh) => {
+    if ("requirement" in target) {
+      const requirement = fresh.requirements.find((each) => each.id === target.requirement);
+      if (requirement === undefined)
+        throw new Error(`This session has no requirement ${target.requirement}.`);
+      return { ...fresh, requirements: fresh.requirements.map((each) => each === requirement ? { ...each, quotes: [...each.quotes, quote] } : each) };
+    }
+    const task = fresh.tasks.find((each) => each.id === target.task);
+    if (task === undefined)
+      throw new Error(`This session has no task ${target.task}.`);
+    return { ...fresh, tasks: fresh.tasks.map((each) => each === task ? { ...each, corrections: [...each.corrections, quote] } : each) };
+  });
+  const task = "task" in target ? goals.tasks.find((each) => each.id === target.task) : undefined;
+  const owner = task !== undefined && "owner" in task ? task.owner : undefined;
+  const named = "requirement" in target ? `requirement ${target.requirement}, "${goals.requirements.find((each) => each.id === target.requirement)?.line ?? ""}"` : `task ${target.task}, "${task?.title ?? ""}"`;
+  await tell(`Inbox: the user corrected ${named}: ${JSON.stringify(quote.words)}`, owner === undefined || owner === sessions.current.id ? sessions.current : await sessions.get(owner));
+  return goals;
+}
+function reopened({ state, owner, startedAt, evidence, endedAt, waitsOn, cmodTask, ...kept }) {
+  return { ...kept, state: "planned" };
+}
+async function reopen(mod, task) {
+  const goals = await changeOwn(mod, (fresh) => {
+    const done = fresh.tasks.find((each) => each.id === task);
+    if (done === undefined || done.state !== "done")
+      throw new Error(`This session has no done task ${task} to reopen.`);
+    return { ...fresh, tasks: fresh.tasks.map((each) => each === done ? reopened(done) : each) };
+  });
+  await tell(`Inbox: the user reopened task ${task}, "${goals.tasks.find((each) => each.id === task)?.title ?? ""}", so it is planned again.`);
+  return goals;
+}
+async function act(mod, action) {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    mod.toast.warning(messageOf(error));
+    return false;
+  }
+}
+function isUnfolded2(mod, key) {
+  return mod.state.session.unfolded.includes(key);
+}
+function toggleUnfolded(mod, key) {
+  const { unfolded } = mod.state.session;
+  mod.state.session.unfolded = unfolded.includes(key) ? unfolded.filter((each) => each !== key) : [...unfolded, key];
+}
+function closeField(mod) {
+  const field = mod.state.session.openField;
+  if (field === null)
+    return;
+  mod.state.session.openField = null;
+  mod.state.session.typed = Object.fromEntries(Object.entries(mod.state.session.typed).filter(([key]) => key !== field && !key.startsWith(`${field}:`)));
+}
+async function toggleField(mod, field, focus, inputKey = field) {
+  const isOpen = mod.state.session.openField === field;
+  closeField(mod);
+  if (isOpen)
+    return;
+  mod.state.session.openField = field;
+  await focus(inputKey);
+}
+async function submitField(mod, action) {
+  if (await act(mod, action))
+    closeField(mod);
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/views/file.tsx
 var fileView = {
   id: "file",
   title: "File",
@@ -20767,7 +22724,202 @@ async function showFile(mod, shownIn, project, path, diff) {
   await shownIn.open({ focus: true });
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/components/chip.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/components/fold.tsx
+function Fold({ mod, foldKey, label }) {
+  const isOpen = isUnfolded2(mod, foldKey);
+  return /* @__PURE__ */ h(Box, {
+    key: `${foldKey}-area`
+  }, /* @__PURE__ */ h(Button, {
+    plain: true,
+    key: foldKey,
+    hover: { inverse: true },
+    onPress: () => toggleUnfolded(mod, foldKey)
+  }, /* @__PURE__ */ h(Text, {
+    dimColor: true,
+    wrap: isOpen ? "wrap" : "truncate-end"
+  }, `${isOpen ? "▾" : "▸"} ${label}`)));
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/views/goal.tsx
+var goalField = "goal:text";
+var addField = "goal:add";
+var capabilityInput = `${addField}:capability`;
+var correctField = (requirement) => `goal:correct:${requirement.id}`;
+function summaryLine(mod) {
+  const { met, requirements, waitingOnYou } = countsIn(mod);
+  return [requirements === 0 ? "No requirements yet" : `${met} of ${plural(requirements, "requirement")} met`, ...waitingOnYou === 0 ? [] : [`${waitingOnYou} waits on you`]].join(" · ");
+}
+function GoalField({ mod, goal }) {
+  const agent = sessions.current.agentType ?? "Claude";
+  const save = (text) => submitField(mod, () => changeGoal(mod, text));
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    gap: 1,
+    paddingY: 1
+  }, /* @__PURE__ */ h(Input, {
+    key: goalField,
+    value: goal,
+    placeholder: "What this session is for",
+    submitLabel: "save",
+    rows: 3,
+    onInput: (text) => setTyped(mod, goalField, text),
+    onSubmit: save
+  }), /* @__PURE__ */ h(Box, null, /* @__PURE__ */ h(Button, {
+    key: "goal:save",
+    label: `Save and tell ${agent}`,
+    onPress: () => save(mod.state.session.typed[goalField] ?? goal)
+  })));
+}
+function quoted2(words) {
+  return `"${words}"`;
+}
+function RequirementRow({ mod, goals, requirement, focus }) {
+  const isDone = isMet(requirement, goals);
+  const foldKey = `quotes:${requirement.id}`;
+  const [first, ...more] = requirement.quotes;
+  const field = correctField(requirement);
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, /* @__PURE__ */ h(Box, {
+    columnGap: 1
+  }, /* @__PURE__ */ h(Text, {
+    ...isDone ? { color: "success" } : { dimColor: true }
+  }, isDone ? "✓" : "○"), /* @__PURE__ */ h(Text, {
+    wrap: "wrap"
+  }, requirement.line)), /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    paddingLeft: 2
+  }, first === undefined ? null : /* @__PURE__ */ h(Fold, {
+    mod,
+    foldKey,
+    label: isUnfolded2(mod, foldKey) ? quoted2(first.words) : quoted2(first.words.replaceAll(`
+`, " "))
+  }), isUnfolded2(mod, foldKey) ? /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    gap: 1,
+    paddingLeft: 2
+  }, more.map((quote) => /* @__PURE__ */ h(Text, {
+    dimColor: true,
+    wrap: "wrap"
+  }, quoted2(quote.words))), /* @__PURE__ */ h(Box, null, /* @__PURE__ */ h(Button, {
+    key: `${field}:open`,
+    label: "Correct…",
+    onPress: () => toggleField(mod, field, focus)
+  })), mod.state.session.openField === field ? /* @__PURE__ */ h(Input, {
+    key: field,
+    placeholder: "What to change, in your words",
+    submitLabel: "send",
+    rows: 3,
+    onSubmit: (words) => submitField(mod, () => correct(mod, { requirement: requirement.id }, words))
+  }) : null) : null));
+}
+function capabilitiesOf(goals) {
+  return [...new Set(goals.requirements.map((each) => each.capability))];
+}
+function Requirements({ mod, goals, focus }) {
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    gap: 1
+  }, capabilitiesOf(goals).map((capability) => /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, /* @__PURE__ */ h(Text, {
+    bold: true,
+    wrap: "wrap"
+  }, capability), /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    paddingLeft: 2
+  }, goals.requirements.filter((each) => each.capability === capability).map((requirement) => /* @__PURE__ */ h(RequirementRow, {
+    mod,
+    goals,
+    requirement,
+    focus
+  }))))));
+}
+function AddRequirement({ mod, goals, focus }) {
+  const last = goals === undefined ? undefined : capabilitiesOf(goals).at(-1);
+  const capability = () => mod.state.session.typed[capabilityInput] ?? last ?? "";
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    gap: 1
+  }, /* @__PURE__ */ h(Box, null, /* @__PURE__ */ h(Button, {
+    key: `${addField}:open`,
+    label: "Add a requirement",
+    onPress: () => toggleField(mod, addField, focus, last === undefined ? capabilityInput : addField)
+  })), mod.state.session.openField === addField ? /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    gap: 1
+  }, /* @__PURE__ */ h(Input, {
+    key: capabilityInput,
+    ...last === undefined ? {} : { value: last },
+    placeholder: "The capability, such as Progress view",
+    submitLabel: "next",
+    onInput: (text) => setTyped(mod, capabilityInput, text),
+    onSubmit: (text) => {
+      setTyped(mod, capabilityInput, text);
+      return focus(addField);
+    }
+  }), /* @__PURE__ */ h(Input, {
+    key: addField,
+    placeholder: "The requirement, in your words",
+    submitLabel: "add",
+    rows: 3,
+    onSubmit: (words) => submitField(mod, () => addRequirement(mod, capability(), words))
+  })) : null);
+}
+function unfiledLine(count) {
+  return `${plural(count, "prompt")} of yours ${count === 1 ? "is" : "are"} not filed yet`;
+}
+function goalView(focus) {
+  return {
+    id: "goal",
+    title: "Goal",
+    render: (mod) => {
+      const goals = goalsIn(mod);
+      const goal = goalTextIn(mod);
+      const { title } = senderOf2({ session: sessions.current.id }, sessions.current.project, mod.state.memory.senders);
+      const unfiled = mod.state.session.unfiled.length;
+      return /* @__PURE__ */ h(Box, {
+        flexDirection: "column",
+        gap: 1
+      }, /* @__PURE__ */ h(Box, {
+        flexDirection: "column"
+      }, /* @__PURE__ */ h(Box, {
+        justifyContent: "space-between",
+        columnGap: 2
+      }, /* @__PURE__ */ h(Box, {
+        flexShrink: 1
+      }, /* @__PURE__ */ h(Text, {
+        bold: true,
+        wrap: "truncate-end"
+      }, `Goal · ${title}`)), /* @__PURE__ */ h(Button, {
+        key: "goal:edit",
+        label: "Edit",
+        onPress: () => toggleField(mod, goalField, focus)
+      })), mod.state.session.openField === goalField ? /* @__PURE__ */ h(GoalField, {
+        mod,
+        goal
+      }) : /* @__PURE__ */ h(Text, {
+        wrap: "wrap",
+        ...goal === "" ? { dimColor: true } : {}
+      }, goal === "" ? "No goal yet" : goal), /* @__PURE__ */ h(Text, {
+        dimColor: true,
+        wrap: "wrap"
+      }, summaryLine(mod))), goals === undefined || goals.requirements.length === 0 ? null : /* @__PURE__ */ h(Requirements, {
+        mod,
+        goals,
+        focus
+      }), /* @__PURE__ */ h(AddRequirement, {
+        mod,
+        goals,
+        focus
+      }), unfiled === 0 ? null : /* @__PURE__ */ h(Text, {
+        dimColor: true
+      }, unfiledLine(unfiled)));
+    }
+  };
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/components/chip.tsx
 var tones = {
   label: { color: "inverseText", backgroundColor: "inactive" },
   folded: { color: "text", backgroundColor: "subtle" },
@@ -20780,7 +22932,7 @@ function chip(label, tone) {
   }, ` ${label} `);
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/components/drawing.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/components/drawing.tsx
 var changeColors = { add: "success", edit: "text", remove: "error" };
 function stats(diffs) {
   if (diffs.length === 0)
@@ -21026,7 +23178,7 @@ function DrawingView({ drawing, columns, keyPrefix, onFile }) {
   });
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/components/item.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/components/item.tsx
 var frameColumns = 10;
 var noteRoom = 3;
 function keyOf(item, path) {
@@ -21695,7 +23847,7 @@ function ItemView({ mod, item, place, columns, onFile, focus, next }) {
   })));
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/views/inbox.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/views/inbox.tsx
 var checkColumns = 4;
 function check(isChecked) {
   return isChecked ? "[x]" : "[ ]";
@@ -22001,10 +24153,314 @@ function inboxView(onFile, onBrowser, focus) {
   };
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/state.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/components/progress.tsx
+var indent2 = 2;
+var shortestBar = 8;
+function checked(text, isDone, look = {}) {
+  return /* @__PURE__ */ h(Text, {
+    wrap: "wrap",
+    ...look
+  }, `${isDone ? "☑" : "☐"} ${text}`);
+}
+function Labeled2({ label, children }) {
+  if (label === undefined)
+    return /* @__PURE__ */ h(Box, {
+      flexDirection: "column"
+    }, children);
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, /* @__PURE__ */ h(Text, {
+    bold: true,
+    wrap: "truncate-end"
+  }, label), /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    paddingLeft: indent2
+  }, children));
+}
+function columnWidths(table, columns) {
+  const widths = table.columns.map((name, index) => Math.max(name.length, ...table.rows.map((row) => row[index]?.length ?? 0)));
+  const room = columns - (widths.length - 1);
+  for (let total = widths.reduce((sum, width) => sum + width, 0);total > room; total -= 1) {
+    const widest = widths.indexOf(Math.max(...widths));
+    if ((widths[widest] ?? 1) <= 1)
+      break;
+    widths[widest] = (widths[widest] ?? 1) - 1;
+  }
+  return widths;
+}
+function TableRows({ table, columns }) {
+  const widths = columnWidths(table, columns);
+  const row = (cells, isHeader) => /* @__PURE__ */ h(Box, {
+    columnGap: 1
+  }, cells.map((cell, index) => /* @__PURE__ */ h(Box, {
+    width: widths[index] ?? 1,
+    minWidth: widths[index] ?? 1,
+    flexShrink: 0
+  }, /* @__PURE__ */ h(Text, {
+    bold: isHeader,
+    wrap: "truncate-end"
+  }, cell))));
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, row(table.columns, true), table.rows.map((cells) => row(cells, false)));
+}
+function BlockRows({ block, columns }) {
+  if ("preset" in block) {
+    if (block.preset === "steps")
+      return /* @__PURE__ */ h(Labeled2, {
+        label: block.label
+      }, block.steps.map((step, index) => checked(step, index < block.current, index === block.current ? { bold: true } : index > block.current ? { dimColor: true } : {})));
+    return /* @__PURE__ */ h(Labeled2, {
+      label: block.label
+    }, block.tasks.map((task) => checked(task.text, task.state === "done", task.state === "active" ? { bold: true } : task.state === "planned" ? { dimColor: true } : {})));
+  }
+  switch (block.kind) {
+    case "bar": {
+      const count = `${block.done} of ${block.total}`;
+      return /* @__PURE__ */ h(Box, {
+        columnGap: 1
+      }, /* @__PURE__ */ h(Box, {
+        flexShrink: 1
+      }, /* @__PURE__ */ h(Text, {
+        bold: true,
+        wrap: "truncate-end"
+      }, block.label)), /* @__PURE__ */ h(Box, {
+        flexShrink: 0
+      }, /* @__PURE__ */ h(Progress, {
+        value: block.done / block.total * 100,
+        width: Math.max(columns - block.label.length - count.length - 2, shortestBar)
+      })), /* @__PURE__ */ h(Box, {
+        flexShrink: 0
+      }, /* @__PURE__ */ h(Text, null, count)));
+    }
+    case "checklist":
+      return /* @__PURE__ */ h(Labeled2, {
+        label: block.label
+      }, block.items.map((item) => checked(item.text, item.done)));
+    case "note":
+      return /* @__PURE__ */ h(Text, {
+        wrap: "wrap"
+      }, block.text);
+    case "table":
+      return /* @__PURE__ */ h(Labeled2, {
+        label: block.label
+      }, /* @__PURE__ */ h(TableRows, {
+        table: block,
+        columns: columns - (block.label === undefined ? 0 : indent2)
+      }));
+  }
+}
+function ProgressBlocks({ blocks, columns }) {
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, blocks.map((block) => /* @__PURE__ */ h(BlockRows, {
+    block,
+    columns
+  })));
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/views/tasks.tsx
+var wordColumns = 8;
+var indent3 = 2;
+var words = { active: "Active", "waiting on you": "Waiting", "waiting after": "Waiting", planned: "Planned", done: "Done", dropped: "Dropped" };
+var looks = { active: { bold: true }, "waiting on you": { bold: true, color: "claude" }, "waiting after": { dimColor: true }, planned: { dimColor: true }, done: { color: "success" }, dropped: { dimColor: true } };
+function detailOf(goals, task, state, item) {
+  if (item !== undefined)
+    return `on you: ${current2(item).title}`;
+  if (state === "waiting after")
+    return `after: ${goals.tasks.find((each) => each.id === task.after)?.title ?? task.after}`;
+  return;
+}
+function Aside({ mod, task, state, item, now, onOpen }) {
+  if (item !== undefined)
+    return /* @__PURE__ */ h(Button, {
+      key: `open:${task.id}`,
+      label: "Open",
+      onPress: () => void onOpen(mod, item.id)
+    });
+  if (state === "waiting after")
+    return null;
+  if (task.state === "active")
+    return /* @__PURE__ */ h(Text, {
+      dimColor: true
+    }, elapsed(task.startedAt, now));
+  if (task.state === "done")
+    return /* @__PURE__ */ h(Fold, {
+      mod,
+      foldKey: `evidence:${task.id}`,
+      label: "✓ evidence"
+    });
+  if (task.state === "dropped")
+    return /* @__PURE__ */ h(Fold, {
+      mod,
+      foldKey: `reason:${task.id}`,
+      label: "reason"
+    });
+  return null;
+}
+function Corrections({ mod, task, focus }) {
+  const field = `tasks:correct:${task.id}`;
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, task.corrections.map((each) => /* @__PURE__ */ h(Text, {
+    dimColor: true,
+    wrap: "wrap"
+  }, `"${each.words}"`)), /* @__PURE__ */ h(Box, null, /* @__PURE__ */ h(Button, {
+    key: `${field}:open`,
+    label: "Correct…",
+    onPress: () => toggleField(mod, field, focus)
+  })), mod.state.session.openField === field ? /* @__PURE__ */ h(Input, {
+    key: field,
+    placeholder: "What to change, in your words",
+    submitLabel: "send",
+    rows: 3,
+    onSubmit: (words) => submitField(mod, () => correct(mod, { task: task.id }, words))
+  }) : null);
+}
+function Unfolded({ mod, task }) {
+  if (task.state === "dropped") {
+    return isUnfolded2(mod, `reason:${task.id}`) ? /* @__PURE__ */ h(Text, {
+      dimColor: true,
+      wrap: "wrap"
+    }, task.reason) : null;
+  }
+  if (task.state !== "done" || !isUnfolded2(mod, `evidence:${task.id}`))
+    return null;
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    gap: 1
+  }, /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, task.evidence.map((each) => /* @__PURE__ */ h(Text, {
+    wrap: "wrap"
+  }, `• ${each}`))), /* @__PURE__ */ h(Box, null, /* @__PURE__ */ h(Button, {
+    key: `reopen:${task.id}`,
+    label: "Reopen",
+    onPress: () => void act(mod, () => reopen(mod, task.id))
+  })));
+}
+function TaskRow({ mod, goals, task, now, onOpen, focus }) {
+  const { items, person } = mod.state.memory;
+  const state = shownState(task, goals, items, person);
+  const item = waitingOn(task, items, person);
+  const detail = detailOf(goals, task, state, item);
+  const foldKey = `task:${task.id}`;
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, /* @__PURE__ */ h(Box, {
+    justifyContent: "space-between",
+    columnGap: 2
+  }, /* @__PURE__ */ h(Box, {
+    columnGap: 1,
+    flexShrink: 1
+  }, /* @__PURE__ */ h(Box, {
+    width: wordColumns,
+    minWidth: wordColumns,
+    flexShrink: 0
+  }, /* @__PURE__ */ h(Text, {
+    ...looks[state]
+  }, words[state])), /* @__PURE__ */ h(Box, {
+    key: `${foldKey}-area`,
+    flexShrink: 1
+  }, /* @__PURE__ */ h(Button, {
+    plain: true,
+    key: foldKey,
+    hover: { inverse: true },
+    onPress: () => toggleUnfolded(mod, foldKey)
+  }, /* @__PURE__ */ h(Text, {
+    wrap: "wrap",
+    dimColor: state === "done" || state === "dropped"
+  }, task.title)))), /* @__PURE__ */ h(Box, {
+    flexShrink: 0
+  }, /* @__PURE__ */ h(Aside, {
+    mod,
+    task,
+    state,
+    item,
+    now,
+    onOpen
+  }))), /* @__PURE__ */ h(Box, {
+    flexDirection: "column",
+    paddingLeft: wordColumns + 1
+  }, detail === undefined ? null : /* @__PURE__ */ h(Text, {
+    dimColor: true,
+    wrap: "wrap"
+  }, detail), /* @__PURE__ */ h(Unfolded, {
+    mod,
+    task
+  }), isUnfolded2(mod, foldKey) ? /* @__PURE__ */ h(Corrections, {
+    mod,
+    task,
+    focus
+  }) : null));
+}
+function Header2({ mod, goals, columns, now }) {
+  const { title } = senderOf2({ session: sessions.current.id }, sessions.current.project, mod.state.memory.senders);
+  const { done, tasks } = countsIn(mod);
+  const [first] = (goals?.tasks ?? []).flatMap((task) => task.state === "planned" || task.startedAt === undefined ? [] : [task.startedAt]).sort();
+  return /* @__PURE__ */ h(Box, {
+    flexDirection: "column"
+  }, /* @__PURE__ */ h(Box, {
+    justifyContent: "space-between",
+    columnGap: 2
+  }, /* @__PURE__ */ h(Box, {
+    flexShrink: 1
+  }, /* @__PURE__ */ h(Text, {
+    bold: true,
+    wrap: "truncate-end"
+  }, `Tasks · ${title}`)), tasks === 0 ? null : /* @__PURE__ */ h(Text, {
+    dimColor: true
+  }, [`${done} of ${tasks} done`, ...first === undefined ? [] : [elapsed(first, now)]].join(" · "))), tasks === 0 ? null : /* @__PURE__ */ h(Progress, {
+    value: done / tasks * 100,
+    width: columns
+  }));
+}
+function tasksView(onOpen, focus) {
+  return {
+    id: "tasks",
+    title: "Tasks",
+    render: (mod, { columns }) => {
+      const goals = goalsIn(mod);
+      const blocks = mod.state.memory.progress?.blocks ?? [];
+      const now = Date.now();
+      return /* @__PURE__ */ h(Box, {
+        flexDirection: "column",
+        gap: 1
+      }, /* @__PURE__ */ h(Header2, {
+        mod,
+        goals,
+        columns,
+        now
+      }), goals === undefined || goals.tasks.length === 0 ? /* @__PURE__ */ h(Text, {
+        dimColor: true,
+        wrap: "wrap"
+      }, "No tasks yet. They show here as Claude plans the work.") : /* @__PURE__ */ h(Box, {
+        flexDirection: "column"
+      }, goals.tasks.map((task) => /* @__PURE__ */ h(TaskRow, {
+        mod,
+        goals,
+        task,
+        now,
+        onOpen,
+        focus
+      }))), blocks.length === 0 ? null : /* @__PURE__ */ h(Box, {
+        flexDirection: "column"
+      }, /* @__PURE__ */ h(Text, {
+        bold: true
+      }, "Progress"), /* @__PURE__ */ h(Box, {
+        paddingLeft: indent3
+      }, /* @__PURE__ */ h(ProgressBlocks, {
+        blocks,
+        columns: columns - indent3
+      }))));
+    }
+  };
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/state.ts
 var initialState = {
-  memory: { items: [], person: {}, repositories: {}, senders: {} },
-  session: { scope: "session", kind: null, viewing: null, selected: [], folds: {}, editing: null, typed: {}, isArchiveOpen: false, file: null, heard: {} }
+  memory: { items: [], person: {}, repositories: {}, senders: {}, progress: null, goals: {}, goalTexts: {} },
+  session: { scope: "session", kind: null, viewing: null, selected: [], folds: {}, editing: null, typed: {}, isArchiveOpen: false, file: null, heard: {}, unfiled: [], takenFrom: [], goalsSession: null, unfolded: [], openField: null }
 };
 
 // node_modules/@cmodjs/core/jobs/tool.js
@@ -22061,7 +24517,7 @@ function resultOf2(value) {
   return JSON.stringify(value);
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/completion.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/completion.ts
 var contextLines = 3;
 var memberKinds = new Set(["property", "field"]);
 async function completeContent(content, project) {
@@ -22275,10 +24731,26 @@ function linesOf(text) {
 `);
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/schemas.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/goals/templates.ts
+var taskLine = /^- \[ \] (.*?)( \(required\))?$/;
+function templatePaths(project, name) {
+  return [`${project}/.claude/cmods/inbox/templates/${name}.md`, `~/.claude/cmods/inbox/templates/${name}.md`];
+}
+function parseTemplate(markdown, path) {
+  const tasks = markdown.split(`
+`).flatMap((line) => {
+    const [, title, mark] = taskLine.exec(line.trimEnd()) ?? [];
+    return title === undefined || title.trim() === "" ? [] : [{ title: title.trim(), isRequired: mark !== undefined }];
+  });
+  if (tasks.length === 0)
+    throw new Error(`${path} holds no task line, such as "- [ ] Run the suite (required)".`);
+  return tasks;
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/schemas.ts
 var change2 = { type: "string", enum: ["add", "remove", "edit"] };
-var line = (description) => ({ type: "string", pattern: "\\S", description });
-var heading2 = (description) => line(`${description} It cannot hold a line break, or a space followed by {", which starts a heading's attributes in the stored Markdown.`);
+var line2 = (description) => ({ type: "string", pattern: "\\S", description });
+var heading2 = (description) => line2(`${description} It cannot hold a line break, or a space followed by {", which starts a heading's attributes in the stored Markdown.`);
 var drawing2 = {
   oneOf: [
     {
@@ -22291,7 +24763,7 @@ var drawing2 = {
           minItems: 1,
           items: {
             type: "object",
-            properties: { path: line("Relative to the project."), change: change2, note: line("Why the file changes, under nine words.") },
+            properties: { path: line2("Relative to the project."), change: change2, note: line2("Why the file changes, under nine words.") },
             required: ["path", "change", "note"],
             additionalProperties: false
           }
@@ -22305,17 +24777,17 @@ var drawing2 = {
       description: "A public API change in one file. The inbox draws the file's other public declarations and every caller a changed or removed one has, from the code.",
       properties: {
         kind: { const: "api" },
-        path: line("Relative to the project."),
+        path: line2("Relative to the project."),
         changes: {
           type: "array",
           minItems: 1,
           items: {
             type: "object",
             properties: {
-              name: line("The declaration as the code names it."),
+              name: line2("The declaration as the code names it."),
               change: change2,
-              signature: line("The whole new signature. Required unless the declaration is removed."),
-              note: line("What the change does, under nine words.")
+              signature: line2("The whole new signature. Required unless the declaration is removed."),
+              note: line2("What the change does, under nine words.")
             },
             required: ["name", "change", "note"],
             additionalProperties: false
@@ -22330,8 +24802,8 @@ var drawing2 = {
       description: "A change to lines of one file. The inbox finds the lines the file holds now and draws the lines around them: the old lines in a proposal, the new lines in a report.",
       properties: {
         kind: { const: "diff" },
-        path: line("Relative to the project."),
-        old: line("Whole lines, exactly as the file held them before the change."),
+        path: line2("Relative to the project."),
+        old: line2("Whole lines, exactly as the file held them before the change."),
         new: { type: "string", description: "The whole lines that replace them, exactly as the file holds them after the change." }
       },
       required: ["kind", "path", "old", "new"],
@@ -22342,17 +24814,17 @@ var drawing2 = {
       description: "Stored data: a database table, or a record the code stores, such as a JSON file. List every column or field, unchanged ones included.",
       properties: {
         kind: { const: "table" },
-        table: line("The table, or the record and where it is stored."),
+        table: line2("The table, or the record and where it is stored."),
         columns: {
           type: "array",
           minItems: 1,
           items: {
             type: "object",
             properties: {
-              name: line("The column or field name."),
-              type: line("Its type and constraints."),
+              name: line2("The column or field name."),
+              type: line2("Its type and constraints."),
               change: change2,
-              was: line("Its type and constraints before the change. Required when the column is edited."),
+              was: line2("Its type and constraints before the change. Required when the column is edited."),
               note: { type: "string", description: "Why it changes." }
             },
             required: ["name", "type"],
@@ -22366,14 +24838,14 @@ var drawing2 = {
     {
       type: "object",
       description: "How parts connect or how state moves, in Mermaid. The inbox draws it as boxes and arrows: a flowchart, sequence, state, class, or ER diagram.",
-      properties: { kind: { const: "diagram" }, mermaid: line("Mermaid source, such as graph TD or stateDiagram-v2.") },
+      properties: { kind: { const: "diagram" }, mermaid: line2("Mermaid source, such as graph TD or stateDiagram-v2.") },
       required: ["kind", "mermaid"],
       additionalProperties: false
     },
     {
       type: "object",
       description: "The change in use: the output a caller gets, a caller written against the new API, a command and what it prints, or Markdown as it reads.",
-      properties: { kind: { const: "example" }, language: line("A highlighter language, such as ts, json, sh, md, or text: one word that does not start with ~ or {."), code: line("The example.") },
+      properties: { kind: { const: "example" }, language: line2("A highlighter language, such as ts, json, sh, md, or text: one word that does not start with ~ or {."), code: line2("The example.") },
       required: ["kind", "language", "code"],
       additionalProperties: false
     }
@@ -22439,7 +24911,7 @@ var defs = {
     type: "object",
     properties: {
       title: heading2("One product or Capability question. Never a technical one."),
-      why: line("What the answer unlocks, and what waits without it.")
+      why: line2("What the answer unlocks, and what waits without it.")
     },
     required: ["title", "why"],
     additionalProperties: false
@@ -22487,7 +24959,7 @@ var reportSchema = {
   required: ["title", "goal", "changes"],
   additionalProperties: false
 };
-var id = line("The id the inbox gave when it was filed.");
+var id = line2("The id the inbox gave when it was filed.");
 var project = {
   type: "string",
   pattern: "^/",
@@ -22500,6 +24972,30 @@ var delivers = {
   description: "The ids of the items this report finishes: the proposal, choice, or question whose work it ships, and each earlier report it replaces. They leave the user's list with this report. Never an item the user rejected or is waiting on your changes to."
 };
 var filed = (schema) => ({ ...schema, properties: { project, ...schema.properties }, $defs: defs });
+var taskId = line2("The task id, such as t3.");
+var session = { type: "string", pattern: "^[\\w-]+$", description: "The id of another session, when the task is in that session's list. Leave it out for a task of this session." };
+var requirementIds = { type: "array", items: line2("A requirement id, such as r2."), uniqueItems: true, description: "The ids of the requirements the work serves, as read with session or the note names them. A requirement is met once every task that serves it is done." };
+var plannedTask = {
+  type: "object",
+  properties: {
+    title: line2('What the task does, in one plain line, such as "Move the browser view to cmod 8".'),
+    serves: requirementIds,
+    after: line2("The id of a task this one waits for, either in the list already or earlier in this call.")
+  },
+  required: ["title", "serves"],
+  additionalProperties: false
+};
+var filedRequirement = {
+  type: "object",
+  properties: {
+    id: line2("An existing requirement id, such as r2, when the words add to that requirement. Leave it out to add a requirement."),
+    capability: line2('For a new requirement: the Capability it belongs to, in a few words, such as "Progress view". Reuse the words of an existing requirement when it belongs to the same one.'),
+    line: line2('For a new requirement: what the user requires, in your one plain line, such as "Progress shows beside the session".'),
+    quotes: { type: "array", minItems: 1, items: line2("Words copied exactly from the user's text, the part that asks for this requirement."), description: "The user's own words for this requirement." }
+  },
+  required: ["quotes"],
+  additionalProperties: false
+};
 var schemas = {
   propose: filed(proposalSchema),
   propose_options: filed(optionsSchema),
@@ -22518,13 +25014,71 @@ var schemas = {
     required: ["id"],
     additionalProperties: false
   },
-  withdraw: { type: "object", properties: { id, reason: line("Why it no longer needs an answer.") }, required: ["id", "reason"], additionalProperties: false },
+  withdraw: { type: "object", properties: { id, reason: line2("Why it no longer needs an answer.") }, required: ["id", "reason"], additionalProperties: false },
   subscribe: { type: "object", properties: { id }, required: ["id"], additionalProperties: false },
   unsubscribe: { type: "object", properties: { id }, required: ["id"], additionalProperties: false },
-  read: { type: "object", properties: { id: { type: "string", description: "One item. Leave it out to list every open item." } }, additionalProperties: false }
+  read: {
+    type: "object",
+    properties: {
+      id: { type: "string", description: "One item. Leave id and session out to list every open item." },
+      session: { ...session, description: "A session id, this session's included: its goal, the user's requirements with their words, and its tasks, each with the state the user sees." }
+    },
+    additionalProperties: false
+  },
+  goal: { type: "object", properties: { text: line2("What this session is for, in one plain sentence as the user would say it.") }, required: ["text"], additionalProperties: false },
+  file: {
+    type: "object",
+    properties: {
+      prompt: line2("The id of the unfiled prompt or answer, as the note or the refusal names it."),
+      requirements: { type: "array", minItems: 1, items: filedRequirement, description: "Each requirement the words ask for, with the words that ask for it. Give requirements or reason, never both." },
+      reason: line2('Why the words ask for nothing to build or change, such as "Thanks the agent" or "Asks a question answered in the reply". Give requirements or reason, never both.')
+    },
+    required: ["prompt"],
+    additionalProperties: false
+  },
+  plan: {
+    type: "object",
+    properties: {
+      tasks: { type: "array", minItems: 1, items: plannedTask, description: "The tasks to add, in the order to do them. Each takes the next id, t1, t2, and so on." },
+      template: { type: "string", pattern: "^[\\w-]+$", description: "A template's name, such as release: its tasks are added after the ones in tasks." },
+      serves: { ...requirementIds, description: "The ids of the requirements the template's tasks serve." }
+    },
+    additionalProperties: false
+  },
+  start: { type: "object", properties: { task: taskId, session }, required: ["task"], additionalProperties: false },
+  finish: {
+    type: "object",
+    properties: {
+      task: taskId,
+      session,
+      evidence: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: { type: "string", pattern: "\\S", maxLength: longestEvidence, description: `What you ran and what it showed, on one line of at most ${longestEvidence} characters, such as "bun test: 164 pass, 0 fail".` },
+        description: "How you know the task is done."
+      }
+    },
+    required: ["task", "evidence"],
+    additionalProperties: false
+  },
+  wait: {
+    type: "object",
+    properties: {
+      task: taskId,
+      session,
+      on: line2("The id of the open inbox item whose answer the task waits for. Give on or after, never both."),
+      after: line2("The id of the task in the same list this one waits for. Give on or after, never both.")
+    },
+    required: ["task"],
+    additionalProperties: false
+  },
+  drop: { type: "object", properties: { task: taskId, session, reason: line2("Why the task is no longer needed.") }, required: ["task", "reason"], additionalProperties: false },
+  progress: progressInput
 };
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/tools.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/tools.ts
+var untyped = (schema) => schema;
 function linkOf(mod, item) {
   return `[${current2(item).title}](file://${itemPath(storeOf(mod), item.id)})`;
 }
@@ -22536,16 +25090,16 @@ function rulebookCheck(mod, told) {
   return async (id, markdown) => {
     const command = ["rulebook", "check", `--stdin-file-path=@inbox/${id}.md`];
     const notRun = (why) => {
-      told.push(`rulebook did not check this item, because ${command.join(" ")} ${why}`);
+      told.push(`rulebook did not check this ${id.startsWith("goals/") ? "goals write" : "item"}, because ${command.join(" ")} ${why}`);
     };
-    const ran = await process.run(command, { stdin: markdown, cwd: mod.folder, timeoutMs: rulebookMs }).catch((error) => messageOf(error));
-    if (typeof ran === "string")
-      return notRun(`did not run: ${ran}`);
-    const said = ran.stdout.trim();
-    if (ran.exitCode === 1)
+    const checked = await process.run(command, { stdin: markdown, cwd: mod.folder, timeoutMs: rulebookMs }).catch((error) => messageOf(error));
+    if (typeof checked === "string")
+      return notRun(`did not run: ${checked}`);
+    const said = checked.stdout.trim();
+    if (checked.exitCode === 1)
       throw new Error(said);
-    if (ran.exitCode !== 0)
-      return notRun(`exited ${ran.exitCode}: ${ran.stderr.trim()}`);
+    if (checked.exitCode !== 0)
+      return notRun(`exited ${checked.exitCode}: ${checked.stderr.trim()}`);
     if (said !== "")
       told.push(said);
   };
@@ -22556,10 +25110,11 @@ function withTold(answer, told) {
 `);
 }
 function inboxTools(loaded, shown) {
-  const inboxTool = (name, description, schema, execute) => tool({
+  const inboxTool = (name, description, schema, execute, isDeferred) => tool({
     name,
     description,
     inputSchema: schema,
+    ...isDeferred === undefined ? {} : { isDeferred },
     execute: async (input, mod) => {
       await loaded;
       return execute(input, mod);
@@ -22578,7 +25133,7 @@ function inboxTools(loaded, shown) {
     const now = new Date().toISOString();
     const told = [];
     const item = await create(mod, declared.title, (id) => ({
-      format,
+      format: format2,
       id,
       kind: declared.kind,
       project,
@@ -22593,11 +25148,11 @@ function inboxTools(loaded, shown) {
     return withTold(`The inbox holds the ${item.kind} "${declared.title}" as ${item.id}, and shows it to the user.${finished} This session is subscribed, so the answer arrives here as a prompt. ${linkLine(mod, item)}`, told);
   };
   return [
-    inboxTool("propose", "Put a proposal in the inbox: the Problems that block a goal, biggest first, each with the one Solution you would ship. The user approves it, rejects it, or requests changes. Read the proposals Skill first: each idea carries the drawing that shows it, and the inbox draws the files, API, and data from the code.", schemas.propose, (input, mod) => file(mod, "proposal", input)),
-    inboxTool("propose_options", "Put a choice in the inbox: one Problem and two or more specific, good Solutions, and the user picks one or rejects every option. Use it only when each option is one you would ship and only the user can choose between them.", schemas.propose_options, (input, mod) => file(mod, "options", input)),
+    inboxTool("propose", "Put a proposal in the inbox: the Problems that block a goal, biggest first, each with the one Solution you would ship. The user approves it, rejects it, or requests changes. Read the proposals Skill first: each idea carries the drawing that shows it, and the inbox draws the files, API, and data from the code.", untyped(schemas.propose), (input, mod) => file(mod, "proposal", input)),
+    inboxTool("propose_options", "Put a choice in the inbox: one Problem and two or more specific, good Solutions, and the user picks one or rejects every option. Use it only when each option is one you would ship and only the user can choose between them.", untyped(schemas.propose_options), (input, mod) => file(mod, "options", input)),
     inboxTool("ask_question", "Put one product or Capability question in the inbox, when it comes up. Never a technical question: those are yours to answer.", schemas.ask_question, (input, mod) => file(mod, "question", input)),
-    inboxTool("report", "Put a report in the inbox when work is done: each thing that changed for the user with how you know it works, and the Problems left open. Name in delivers the proposal, choice, or question the work ships and each earlier report this one replaces, so they leave the user's list. The user marks it done or requests changes. Read the proposals Skill first.", schemas.report, (input, mod) => file(mod, "report", input)),
-    inboxTool("revise", "Replace what an open or rejected proposal, choice, or question says with a new revision, after a correction, after a rejection, or when you learn more. A revision reopens a rejected item for the user, so revise it instead of filing a new item. A report is final: file a new report for the next round of work. Any session may revise any open or rejected item, and revising subscribes this session to it. Give the whole item again, under the key of the kind it was filed as: proposal, options, question, or report.", schemas.revise, async (input, mod) => {
+    inboxTool("report", "Put a report in the inbox when work is done: each thing that changed for the user with how you know it works, and the Problems left open. Name in delivers the proposal, choice, or question the work ships and each earlier report this one replaces, so they leave the user's list. The user marks it done or requests changes. Read the proposals Skill first.", untyped(schemas.report), (input, mod) => file(mod, "report", input)),
+    inboxTool("revise", "Replace what an open or rejected proposal, choice, or question says with a new revision, after a correction, after a rejection, or when you learn more. A revision reopens a rejected item for the user, so revise it instead of filing a new item. A report is final: file a new report for the next round of work. Any session may revise any open or rejected item, and revising subscribes this session to it. Give the whole item again, under the key of the kind it was filed as: proposal, options, question, or report.", untyped(schemas.revise), async (input, mod) => {
       const known = find(mod, input["id"]);
       if (known.kind === "report")
         throw new Error(`${known.id} is a report, and a report is final. File a new report for the next round of work.`);
@@ -22622,19 +25177,18 @@ function inboxTools(loaded, shown) {
     }),
     inboxTool("withdraw", "Take an item out of the inbox because it no longer needs an answer.", schemas.withdraw, async (input, mod) => {
       const by = author();
-      const reason = input["reason"];
-      const withdrawn = await change(mod, input["id"], (fresh, person) => {
+      const withdrawn = await change(mod, input.id, (fresh, person) => {
         const status = statusOf(fresh, person);
         if (status !== "open")
           throw new Error(`${fresh.id} is already ${status}.`);
-        return { ...fresh, withdrawal: { kind: "withdraw", words: reason, revision: revisionOf(fresh), by, at: new Date().toISOString() } };
+        return { ...fresh, withdrawal: { kind: "withdraw", words: input.reason, revision: revisionOf(fresh), by, at: new Date().toISOString() } };
       });
       return `Withdrew ${withdrawn.id}.`;
     }),
     inboxTool("subscribe", "Hear every change to an inbox item in this session: each revision, the answer, and a withdrawal.", schemas.subscribe, async (input, mod) => {
       const by = author();
       let isNew = false;
-      const item = await change(mod, input["id"], (fresh) => {
+      const item = await change(mod, input.id, (fresh) => {
         isNew = !fresh.subscribers.some((each) => each.session === by.session);
         return isNew ? { ...fresh, subscribers: [...fresh.subscribers, { ...by, since: new Date().toISOString() }] } : fresh;
       });
@@ -22642,14 +25196,19 @@ function inboxTools(loaded, shown) {
     }),
     inboxTool("unsubscribe", "Stop hearing changes to an inbox item in this session.", schemas.unsubscribe, async (input, mod) => {
       const by = author();
-      const item = await change(mod, input["id"], (fresh) => ({ ...fresh, subscribers: fresh.subscribers.filter((each) => each.session !== by.session) }));
+      const item = await change(mod, input.id, (fresh) => ({ ...fresh, subscribers: fresh.subscribers.filter((each) => each.session !== by.session) }));
       return `This session no longer hears ${item.id}.`;
     }),
-    inboxTool("read", "Read one inbox item, with every answer the user gave and the revision each answers, or list every open item when you give no id. An answer is the user's call with that revision in front of them, not a rule for later items.", schemas.read, async (input, mod) => {
+    inboxTool("read", "Read one inbox item, with every answer the user gave and the revision each answers, or list every open item when you give no id. An answer is the user's call with that revision in front of them, not a rule for later items. With session, read that session's goal, the user's requirements in their exact words, and its tasks, such as to take a planned task of another session with start.", schemas.read, async (input, mod) => {
       await load(mod);
       if (isUnnamed(mod.state.memory.items, mod.state.memory.senders))
-        await learnSenders(mod);
-      const id = input["id"];
+        await learnSessions(mod);
+      const { id, session: shown } = input;
+      if (shown !== undefined) {
+        if (id !== undefined)
+          throw new Error("Give id to read an item, or session to read a session, never both.");
+        return sessionSummary(mod, shown);
+      }
       const deliveries = deliveriesOf(mod.state.memory.items);
       if (id === undefined)
         return mod.state.memory.items.filter((item) => statusOf(item, personIn(mod, item)) === "open" && deliveries[item.id] === undefined).sort(byNewest).map((item) => summaryOf2(mod, item, deliveries));
@@ -22657,9 +25216,15 @@ function inboxTools(loaded, shown) {
       const closings = [...personIn(mod, item).answers, ...item.withdrawal === undefined ? [] : [item.withdrawal]].sort((a, b) => a.at.localeCompare(b.at));
       const answers = closings.map((closing) => ({ ...numbered(closing), ..."corrections" in closing && closing.corrections !== undefined ? { corrections: closing.corrections.map(numbered) } : {} }));
       return { ...summaryOf2(mod, item, deliveries), revision: revisionNumber(revisionOf(item)), content: current2(item), answers };
+    }),
+    ...goalsTools(inboxTool),
+    inboxTool("progress", "Set this session's progress: the bars, checklists, notes, tables, and presets the user reads on the Tasks view beside the session. Call it each time the progress changes, with every block, because each call replaces the blocks set before. The user sees progress there and never in the chat, so leave it out of your replies. A long command, such as a test run, updates it while it runs with `inbox progress '<blocks JSON>'`, which takes the same list of blocks.", schemas.progress, async (input, mod) => {
+      rememberProgress(mod, await setProgress(storeOf(mod), rename, sessions.current.id, input["blocks"]));
+      return "Set this session's progress.";
     })
   ];
 }
+var rename = (from, to) => ran(["mv", "-f", from, to]);
 function deliverable(mod, ids) {
   return ids.map((id) => {
     const item = find(mod, id);
@@ -22689,8 +25254,357 @@ function summaryOf2(mod, item, deliveries) {
     link: linkOf(mod, item)
   };
 }
+var singleSpaced = (text) => text.replace(/\s+/g, " ").trim();
+var wordCharacter = /[\p{L}\p{N}]/u;
+var isWordCharacter = (character) => character !== undefined && wordCharacter.test(character);
+function isQuoteOf(text, quote) {
+  const words = singleSpaced(text);
+  const quoted = singleSpaced(quote);
+  if (!wordCharacter.test(quoted))
+    return false;
+  for (let at = words.indexOf(quoted);at !== -1; at = words.indexOf(quoted, at + 1)) {
+    const isCutBefore = isWordCharacter(words[at - 1]) && isWordCharacter(quoted[0]);
+    const isCutAfter = isWordCharacter(words[at + quoted.length]) && isWordCharacter(quoted.at(-1));
+    if (!isCutBefore && !isCutAfter)
+      return true;
+  }
+  return false;
+}
+var whose = (session) => session === sessions.current.id ? "This session" : `Session ${session}`;
+function requirementList(goals) {
+  return goals.requirements.length === 0 ? "This session has no requirements yet: file the user's words with file first." : `The requirements are ${goals.requirements.map((each) => `${each.id} (${each.line})`).join(", ")}.`;
+}
+function standing(mod, goals) {
+  const { met, requirements, done, tasks } = counts(goals, mod.state.memory.items, mod.state.memory.person);
+  return `${done} of ${tasks} tasks done, ${met} of ${requirements} requirements met.`;
+}
+function refusalOf(task, action) {
+  if (task.state === "done")
+    return `${task.id} is done. Only the user reopens a done task, from the Tasks view.`;
+  if (task.state === "dropped")
+    return `${task.id} was dropped: ${task.reason}. Plan a new task instead.`;
+  if (task.state === "active")
+    return `${task.id} is active already, taken by session ${task.owner}.`;
+  return `${task.id} is planned. Take it with start before you ${action === "wait on" ? "wait" : action} it.`;
+}
+function refuseTakenElsewhere(mod, task, action) {
+  if (task.state === "active" && task.owner !== sessions.current.id && isRunning(task.owner, mod.state.memory.senders))
+    throw new Error(`${task.id} is active in session ${task.owner}, which took it and still runs, so only that session can ${action}.`);
+}
+function isChainedTo(goals, from, target) {
+  let at = goals.tasks.find((each) => each.id === from);
+  for (let steps = 0;at !== undefined && steps <= goals.tasks.length; steps += 1) {
+    if (at.id === target)
+      return true;
+    const after = at.after;
+    at = after === undefined ? undefined : goals.tasks.find((each) => each.id === after);
+  }
+  return false;
+}
+async function templateOf(project, name) {
+  const paths = templatePaths(project, name);
+  for (const path of paths)
+    if (await fs.exists(path))
+      return parseTemplate(await fs.read(path), path);
+  throw new Error(`There is no template ${name}. A template is a Markdown task list, such as "- [ ] Run the suite (required)", at ${paths.join(" or ")}.`);
+}
+function taskIn(goals, id) {
+  const task = goals.tasks.find((each) => each.id === id);
+  if (task === undefined)
+    throw new Error(`${whose(goals.session)} has no task ${id}. Call read with session ${goals.session} to list its tasks.`);
+  return task;
+}
+async function changeTask(mod, input, update) {
+  const { task: id, session = sessions.current.id } = input;
+  const told = [];
+  const goals = await changeGoals(mod, session, (fresh) => {
+    const known = fresh ?? emptyGoals(session, sessions.current.project);
+    const task = taskIn(known, id);
+    return { ...known, tasks: known.tasks.map((each) => each === task ? update(task, known) : each) };
+  }, rulebookCheck(mod, told), told);
+  return { goals, task: taskIn(goals, id), told };
+}
+async function sessionSummary(mod, session) {
+  const goals = await loadGoalsOf(mod, session) ?? emptyGoals(session, "");
+  const { items, person } = mod.state.memory;
+  const read = session === sessions.current.id ? Promise.resolve(sessions.current) : sessions.get(session);
+  return read.then(async (shown) => ({
+    session,
+    goal: await shown.goal.text(),
+    requirements: goals.requirements.map((each) => ({ ...each, isMet: isMet(each, goals) })),
+    tasks: goals.tasks.map((task) => ({ ...task, state: shownState(task, goals, items, person) })),
+    ...session === sessions.current.id ? { unfiled: mod.state.session.unfiled.length } : {}
+  }));
+}
+function goalsTools(inboxTool) {
+  return [
+    inboxTool("goal", "Set what this session is for, in one plain sentence as the user would say it, when the user names it or it changes. The user reads it on top of the Goal view, and you read it again after every compaction.", schemas.goal, async (input) => {
+      const text = input.text.trim();
+      await sessions.current.goal.update({ text });
+      return `This session's goal is now: ${text}`;
+    }),
+    inboxTool("file", "File the user's prompt or inbox answer into requirements, in the user's exact words, so you keep them after a compaction. Every prompt and every worded answer of the user's waits to be filed, and your turn cannot end until each is. For each thing it asks for, give a requirement: the id of an existing one the words add to, or the capability and your one line for a new one, each with quotes copied exactly from the words. When the words ask for nothing to build or change, give the reason instead.", schemas.file, async (input, mod) => {
+      const { prompt: id, requirements: entries, reason } = input;
+      const { unfiled } = mod.state.session;
+      const words = unfiled.find((each) => each.id === id);
+      if (words === undefined)
+        throw new Error(unfiled.length === 0 ? `Nothing waits to be filed, so ${id} is filed already or holds no words of the user's.` : `${id} does not wait to be filed. These do: ${unfiled.map((each) => each.id).join(", ")}.`);
+      if (entries === undefined === (reason === undefined))
+        throw new Error("Give requirements, each with the words that ask for it, or reason, when the words ask for nothing. Never both.");
+      for (const quote of (entries ?? []).flatMap((each) => each.quotes)) {
+        if (!isQuoteOf(words.text, quote))
+          throw new Error(`"${quote}" is not word for word in ${id}. Copy the user's exact words from it: ${JSON.stringify(firstLineOf(words.text))}`);
+      }
+      const session = sessions.current.id;
+      const told = [];
+      const goals = await changeGoals(mod, session, (fresh) => {
+        const known = fresh ?? emptyGoals(session, sessions.current.project);
+        let requirements = known.requirements;
+        const ids = [];
+        for (const entry of entries ?? []) {
+          const quotes = entry.quotes.map((each) => ({ words: each, source: words.source, id, at: words.at }));
+          if (entry.id !== undefined) {
+            const named = entry.id;
+            if (entry.capability !== undefined || entry.line !== undefined)
+              throw new Error(`Give ${named} with its quotes alone: its capability and line stay as they are.`);
+            if (!requirements.some((each) => each.id === named))
+              throw new Error(`There is no requirement ${named}. ${requirementList(known)}`);
+            requirements = requirements.map((each) => each.id === named ? { ...each, quotes: [...each.quotes, ...quotes] } : each);
+            ids.push(named);
+          } else {
+            if (entry.capability === undefined || entry.line === undefined)
+              throw new Error("A new requirement needs its capability and its line. To add the words to an existing requirement, give its id.");
+            const added = nextId("r", requirements);
+            requirements = [...requirements, { id: added, capability: entry.capability, line: entry.line, quotes }];
+            ids.push(added);
+          }
+        }
+        const filing = reason === undefined ? { id, source: words.source, requirements: ids } : { id, source: words.source, reason };
+        return { ...known, requirements, filings: [...known.filings, filing] };
+      }, rulebookCheck(mod, told), told);
+      mod.state.session.unfiled = mod.state.session.unfiled.filter((each) => each.id !== id);
+      const into = reason === undefined ? `Filed ${id} into ${goals.requirements.filter((each) => each.quotes.some((quote) => quote.id === id)).map((each) => `${each.id} (${each.line})`).join(", ")}.` : `Filed ${id}: ${reason}.`;
+      const left = mod.state.session.unfiled;
+      return withTold(left.length === 0 ? into : `${into} Still to file: ${left.map((each) => each.id).join(", ")}.`, told);
+    }, false),
+    inboxTool("plan", "Add tasks to this session's list, which the user reads on the Tasks view and you read again after every compaction. Claude Code's checklist is off: plan here instead. Each task names the requirements it serves, and can wait after another task. A template adds a list the user or the team keeps, such as release, read from the project's .claude/cmods/inbox/templates/<name>.md first, then the user's ~/.claude/cmods/inbox/templates/<name>.md. A task a template marks required cannot be dropped.", schemas.plan, async (input, mod) => {
+      const { tasks: given = [], template: name, serves = [] } = input;
+      if (given.length === 0 && name === undefined)
+        throw new Error("Give tasks, a template, or both.");
+      const fromTemplate = name === undefined ? [] : (await templateOf(sessions.current.project, name)).map((each) => ({ ...each, serves, template: name }));
+      const planned = [...given.map((each) => ({ ...each, isRequired: false })), ...fromTemplate];
+      const session = sessions.current.id;
+      const told = [];
+      const goals = await changeGoals(mod, session, (fresh) => {
+        const known = fresh ?? emptyGoals(session, sessions.current.project);
+        const tasks = planned.reduce((list, each) => {
+          for (const served of each.serves)
+            if (!known.requirements.some((requirement) => requirement.id === served))
+              throw new Error(`"${each.title}" serves ${served}, which is no requirement. ${requirementList(known)}`);
+          const after = "after" in each ? each.after : undefined;
+          if (after !== undefined && !list.some((task) => task.id === after))
+            throw new Error(`"${each.title}" waits after ${after}, which is no task in the list or earlier in this call.`);
+          return [...list, { id: nextId("t", list), ...each, state: "planned", corrections: [] }];
+        }, known.tasks);
+        return { ...known, tasks };
+      }, rulebookCheck(mod, told), told);
+      const added = goals.tasks.slice(-planned.length);
+      return withTold(`Planned ${added.map((each) => `${each.id}: ${each.title}${each.isRequired ? " (required)" : ""}`).join("; ")}. Take a task with start before you work on it.`, told);
+    }),
+    inboxTool("start", "Take a planned task before you work on it, in this session or, with session, in another session's list, so parallel sessions split one plan. The task shows active until you finish, wait, or drop it, and your turn cannot end while a task you took is active.", schemas.start, async (input, mod) => {
+      const cmodTask = cmodTaskOf(mod, input.session, input.task);
+      const { task, told } = await changeTask(mod, input, (fresh, goals) => {
+        if (fresh.state !== "planned")
+          throw new Error(refusalOf(fresh, "start"));
+        const before = goals.tasks.find((each) => each.id === fresh.after);
+        if (before !== undefined && !isClosed(before))
+          throw new Error(`${fresh.id} waits after ${before.id}, which is not done yet. Finish ${before.id} first.`);
+        return { ...fresh, state: "active", owner: sessions.current.id, ...cmodTask === undefined ? {} : { cmodTask }, startedAt: new Date().toISOString() };
+      });
+      return withTold(`Started ${task.id}: ${task.title}. Before you stop, finish it with its evidence, wait on the user's answer or on another task, or drop it.`, told);
+    }),
+    inboxTool("finish", "Mark an active task done, with the evidence that shows it works. Only the user reopens a done task.", schemas.finish, async (input, mod) => {
+      const { goals, task, told } = await changeTask(mod, input, (fresh) => {
+        if (fresh.state !== "active")
+          throw new Error(refusalOf(fresh, "finish"));
+        refuseTakenElsewhere(mod, fresh, "finish it");
+        return { ...fresh, state: "done", evidence: input.evidence, endedAt: new Date().toISOString() };
+      });
+      return withTold(`Finished ${task.id}: ${task.title}. ${standing(mod, goals)}`, told);
+    }),
+    inboxTool("wait", "Make a task wait: on an open inbox item, while you need the user's answer, or after another task in the same list. A task that waits on you lets your turn end, and shows active again once the user answers. Wait on the item you filed to ask, never in the chat.", schemas.wait, async (input, mod) => {
+      const { on, after } = input;
+      if (on === undefined === (after === undefined))
+        throw new Error("Give on, the inbox item whose answer the task waits for, or after, the task it waits for. Never both.");
+      if (on !== undefined) {
+        const item = find(mod, on);
+        const status = statusOf(item, personIn(mod, item));
+        if (status !== "open")
+          throw new Error(`${on} is ${status}, so no answer is left to wait for.`);
+        if (isWithAgent(item, personIn(mod, item)))
+          throw new Error(`The user requested changes to ${on}, so it waits on you. Revise it, then wait on it.`);
+      }
+      const { task, told } = await changeTask(mod, input, (fresh, goals) => {
+        if (isClosed(fresh))
+          throw new Error(refusalOf(fresh, "wait on"));
+        refuseTakenElsewhere(mod, fresh, "make it wait");
+        if (on !== undefined)
+          return { ...fresh, waitsOn: on };
+        const before = goals.tasks.find((each) => each.id === after);
+        if (before === undefined)
+          throw new Error(`There is no task ${after} in the same list.`);
+        if (isChainedTo(goals, before.id, fresh.id))
+          throw new Error(`${before.id} waits after ${fresh.id} already, so ${fresh.id} cannot wait after it.`);
+        if (isClosed(before))
+          throw new Error(`${before.id} is ${before.state} already, so nothing is left to wait for.`);
+        return { ...fresh, after: before.id };
+      });
+      const reached = on === undefined || find(mod, on).subscribers.some((each) => each.session === sessions.current.id) ? "" : ` This session does not hear ${on}, so call subscribe on it to get the answer here.`;
+      return withTold(on === undefined ? `${task.id} waits after ${task.after}, and shows active again once ${task.after} is done.` : `${task.id} waits on you now, and your turn may end. The answer to ${on} arrives as a prompt, and ${task.id} shows active again.${reached}`, told);
+    }),
+    inboxTool("drop", "Drop a planned or active task that is no longer needed, with the reason. A task its template marks required cannot be dropped: finish it.", schemas.drop, async (input, mod) => {
+      const { goals, task, told } = await changeTask(mod, input, (fresh) => {
+        if (isClosed(fresh))
+          throw new Error(refusalOf(fresh, "drop"));
+        refuseTakenElsewhere(mod, fresh, "drop it");
+        if (fresh.isRequired)
+          throw new Error(`${fresh.id} is required by the template ${fresh.template}, so it cannot be dropped. Finish it with its evidence.`);
+        return { ...fresh, state: "dropped", reason: input.reason, endedAt: new Date().toISOString() };
+      });
+      return withTold(`Dropped ${task.id}: ${task.title}. ${standing(mod, goals)}`, told);
+    })
+  ];
+}
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/widgets/waiting.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/widgets/goal.tsx
+function goalLine(mod) {
+  const goal = goalTextIn(mod);
+  if (goalsIn(mod) === undefined && goal === "")
+    return;
+  const { met, requirements, waitingOnYou } = countsIn(mod);
+  return [`Goal: ${goal === "" ? "not set" : goal}`, ...requirements === 0 ? [] : [`${met} of ${requirements} met`], ...waitingOnYou === 0 ? [] : [`${waitingOnYou} waits on you`]].join(" · ");
+}
+function goalWidget(onOpen) {
+  return {
+    id: "goal-summary",
+    title: "Goal and requirements met",
+    areas: [BelowPrompt],
+    place: { size: "fill" },
+    render: (mod) => {
+      const line = goalLine(mod);
+      if (line === undefined)
+        return;
+      return /* @__PURE__ */ h(Button, {
+        plain: true,
+        key: "open-goal",
+        onPress: onOpen
+      }, /* @__PURE__ */ h(Text, {
+        wrap: "truncate-end"
+      }, line));
+    }
+  };
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/widgets/sessions.tsx
+var widestTitle = 16;
+var indent4 = 2;
+var gap = 2;
+function rowsOf(mod) {
+  const { goals, senders, goalTexts } = mod.state.memory;
+  return [...new Set([...Object.keys(goalTexts), ...Object.keys(goals)])].filter((session) => senders[session]?.isRunning === true && (goalTextIn(mod, session) !== "" || goals[session] !== undefined)).sort((a, b) => (goals[b]?.updatedAt ?? "").localeCompare(goals[a]?.updatedAt ?? "")).map((session) => {
+    const filed = goals[session];
+    const { met, requirements, waitingOnYou } = countsIn(mod, session);
+    const isDone = requirements > 0 && met === requirements;
+    return {
+      session,
+      title: senderOf2({ session }, filed?.project ?? "", senders).title,
+      goal: goalTextIn(mod, session),
+      met: filed === undefined ? "" : `${met} of ${requirements}`,
+      status: filed === undefined ? "" : waitingOnYou > 0 ? `${waitingOnYou} waits on you` : isDone ? "done" : "",
+      look: waitingOnYou > 0 ? { color: "claude" } : { color: "success" }
+    };
+  });
+}
+function widthOf2(rows, cell) {
+  return Math.max(0, ...rows.map((row) => cell(row).length));
+}
+function Cell({ width, children }) {
+  return /* @__PURE__ */ h(Box, {
+    width,
+    minWidth: width,
+    flexShrink: 0
+  }, children);
+}
+var sessionsWidget = {
+  id: "sessions",
+  title: "Sessions",
+  areas: [Dashboard],
+  place: { size: "fill" },
+  render: (mod, { columns }) => {
+    const rows = rowsOf(mod);
+    if (rows.length === 0)
+      return;
+    const title = Math.min(widestTitle, widthOf2(rows, (row) => row.title));
+    const met = widthOf2(rows, (row) => row.met);
+    const status = widthOf2(rows, (row) => row.status);
+    const cells = 2 + (met === 0 ? 0 : 1) + (status === 0 ? 0 : 1);
+    const goal = Math.max(1, columns - indent4 - title - met - status - gap * (cells - 1));
+    return /* @__PURE__ */ h(Box, {
+      flexDirection: "column"
+    }, /* @__PURE__ */ h(Text, {
+      bold: true
+    }, "Sessions"), /* @__PURE__ */ h(Box, {
+      flexDirection: "column",
+      paddingLeft: indent4
+    }, rows.map((row) => /* @__PURE__ */ h(Box, {
+      key: `session:${row.session}`,
+      columnGap: gap
+    }, /* @__PURE__ */ h(Cell, {
+      width: title
+    }, /* @__PURE__ */ h(Text, {
+      bold: true,
+      wrap: "truncate-end"
+    }, row.title)), /* @__PURE__ */ h(Cell, {
+      width: goal
+    }, /* @__PURE__ */ h(Text, {
+      wrap: "truncate-end",
+      dimColor: row.goal === ""
+    }, row.goal === "" ? "No goal yet" : row.goal)), met === 0 ? null : /* @__PURE__ */ h(Cell, {
+      width: met
+    }, /* @__PURE__ */ h(Text, null, row.met)), status === 0 ? null : /* @__PURE__ */ h(Cell, {
+      width: status
+    }, /* @__PURE__ */ h(Text, {
+      ...row.look
+    }, row.status))))));
+  }
+};
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/widgets/task.tsx
+function taskWidget(onOpen) {
+  return {
+    id: "active-task",
+    title: "Active task",
+    areas: [Working],
+    place: { size: "fill" },
+    render: (mod) => {
+      const [active] = tasksIn(mod).flatMap(({ goals, task, state }) => state === "active" && task.state === "active" && task.owner === sessions.current.id ? [{ goals, task }] : []).sort((a, b) => b.task.startedAt.localeCompare(a.task.startedAt));
+      if (active === undefined)
+        return;
+      const { task, goals } = active;
+      const { done, tasks } = countsIn(mod, goals.session);
+      const line = [task.title, elapsed(task.startedAt, Date.now()), `${done} of ${tasks}`].join(" · ");
+      return /* @__PURE__ */ h(Button, {
+        plain: true,
+        key: "open-tasks",
+        onPress: onOpen
+      }, /* @__PURE__ */ h(Text, {
+        wrap: "truncate-end"
+      }, line));
+    }
+  };
+}
+
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/widgets/waiting.tsx
 function waitingWidget(onOpen) {
   return {
     id: "waiting",
@@ -22711,13 +25625,19 @@ function waitingWidget(onOpen) {
   };
 }
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/src/mod.tsx
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/src/mod.tsx
 var titleOf3 = (item) => current2(item).title;
+var progressTool = "mcp__inbox__progress";
+function UnlessProgress({ tool, isExpanded, Default }) {
+  return tool === progressTool && isExpanded !== true ? /* @__PURE__ */ h(Box, null) : /* @__PURE__ */ h(Default, null);
+}
 var inbox = defineMod({
   name: "inbox",
   state: initialState,
   hotkeys: {
-    toggle: { title: "Show or hide the inbox" }
+    toggle: { title: "Show or hide the inbox" },
+    goal: { title: "Show or hide the session's goal and your requirements" },
+    tasks: { title: "Show or hide the session's tasks and progress" }
   },
   setup(mod) {
     const store = storeOf(mod);
@@ -22770,15 +25690,35 @@ var inbox = defineMod({
         return current.toast.warning(`The inbox has no item ${id}`);
       return show(current, id, true);
     };
-    const loaded = startDelivery(mod).then(() => load(mod));
-    fs.onChange({ path: store.changed }, () => load(mod));
-    mod.every(rereadMs, () => Promise.all([load(mod), learnSenders(mod)]));
-    sessions.current.onSessionStart(() => loadAll(mod));
+    const goal = mod.views.add(goalView((key) => goal.focus(key)));
+    const tasks = mod.views.add(tasksView(linked, (key) => tasks.focus(key)));
+    const openGoal = () => goal.open({ focus: true });
+    const openTasks = () => tasks.open({ focus: true });
+    const toggleView = async (current, shown, open) => {
+      if (!shown.isShown)
+        return open();
+      closeField(current);
+      await shown.close();
+    };
+    const reload = () => load(mod).then(() => toastWaiting(mod, linked));
+    const loaded = startDelivery(mod).then(() => load(mod)).then(() => toastWaiting(mod, linked, true));
+    fs.onChange({ path: store.changed }, reload);
+    followProgress(mod);
+    mod.every(rereadMs, () => Promise.all([reload(), learnSessions(mod)]));
+    sessions.current.onSessionStart(() => Promise.all([loadAll(mod).then(() => toastWaiting(mod, linked, true)), learnSessions(mod)]));
+    learnSessions(mod);
+    installGates(mod, loaded);
     for (const job of inboxTools(loaded, filed))
       mod.use(job);
-    const web = mod.use(program({ command: ["inbox", "serve", "--data", mod.dataFolder], isService: true }));
+    const web = mod.use(program({ command: ["inbox", "serve", "--data", mod.dataFolder], isService: true, isWebApp: true }));
+    hearGoalChanges(mod, web);
     mod.widgets.add(waitingWidget(open));
+    mod.widgets.add(goalWidget(openGoal));
+    mod.widgets.add(taskWidget(openTasks));
+    mod.widgets.add(sessionsWidget);
     mod.hotkeys.toggle.onPress(() => toggle(mod));
+    mod.hotkeys.goal.onPress(() => toggleView(mod, goal, openGoal));
+    mod.hotkeys.tasks.onPress(() => toggleView(mod, tasks, openTasks));
     mod.use(slashCommand({ name: "inbox", description: "Show or hide the inbox: the proposals, options, questions, and reports agents bring you", immediate: true, reply: (_, current) => toggle(current) }));
     mod.styles.add({ kind: Paragraph, render: (current, props) => /* @__PURE__ */ h(LinkedBlock, {
       props,
@@ -22790,10 +25730,19 @@ var inbox = defineMod({
       items: store.items,
       onOpen: (id) => linked(current, id)
     }) });
+    mod.styles.add({ kind: ToolCall, render: (_, props) => /* @__PURE__ */ h(UnlessProgress, {
+      ...props
+    }) });
+    mod.styles.add({ kind: ToolResult, render: (_, props) => /* @__PURE__ */ h(UnlessProgress, {
+      ...props
+    }) });
+    mod.styles.add({ kind: ToolGroup, render: (_, { calls, Default }) => calls.some((call) => call.tool === progressTool) ? /* @__PURE__ */ h(Default, {
+      isExpanded: true
+    }) : /* @__PURE__ */ h(Default, null) });
   }
 });
 
-// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-KtklXj/release/hooks/register.ts
+// ../../../../private/var/folders/t0/0bwlr70s62g8frgryzv4p4fr0000gn/T/cmod-publish-inbox-9eZVxL/release/hooks/register.ts
 function register(addHook, options) {
   registerMod(addHook, inbox, options);
 }

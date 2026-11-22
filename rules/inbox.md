@@ -9,3 +9,5 @@ The user's answer arrives in this session as a prompt from the inbox. Act on wha
 A report names in `delivers` the proposal, choice, or question whose work it ships, and each earlier report it replaces, so they leave the user's list with it.
 
 The same inbox answer can arrive twice after a reload. Act on each answer number once.
+
+Keep your tasks in the inbox: `plan` them, `start` each before you work on it, and when you stop to ask the user, `wait` on the item you filed.

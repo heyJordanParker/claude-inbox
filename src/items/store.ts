@@ -18,7 +18,7 @@ export type Store = {
   readonly disk: Disk
 }
 
-type Stamps = ReadonlyMap<string, string>
+export type Stamps = ReadonlyMap<string, string>
 
 type Unreadable = { readonly id: string; readonly reason: string }
 
@@ -63,9 +63,9 @@ export function personPath(store: Store, id: string): string {
   return `${store.person}/${id}.md`
 }
 
-async function storedFiles(store: Store, folder: string): Promise<{ readonly id: string; readonly name: string; readonly stamp: string }[]> {
+async function storedFiles(store: Store, folder: string, extension = '.md'): Promise<{ readonly id: string; readonly name: string; readonly stamp: string }[]> {
   if (!(await store.disk.exists(folder))) return []
-  return (await store.disk.list(folder)).filter((entry) => entry.isFile && entry.name.endsWith('.md')).map((entry) => ({ id: entry.name.slice(0, -'.md'.length), name: entry.name, stamp: `${entry.modifiedAt}:${entry.size}` }))
+  return (await store.disk.list(folder)).filter((entry) => entry.isFile && entry.name.endsWith(extension)).map((entry) => ({ id: entry.name.slice(0, -extension.length), name: entry.name, stamp: `${entry.modifiedAt}:${entry.size}` }))
 }
 
 async function storedIn(store: Store, path: string): Promise<Stored | undefined> {
@@ -76,7 +76,7 @@ async function storedIn(store: Store, path: string): Promise<Stored | undefined>
   }
 }
 
-function reasonOf(error: unknown): string {
+export function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
@@ -95,9 +95,16 @@ async function storedPerson(store: Store, id: string): Promise<Person> {
   return parsePerson(id, await store.disk.read(personPath(store, id)))
 }
 
-async function readFresh<Each>(store: Store, folder: string, known: Stamps, read: (id: string) => Promise<Each>) {
-  const [files, last] = await Promise.all([storedFiles(store, folder), known.size === 0 ? undefined : lastWritten(store)])
-  const fresh = files.filter(({ id, stamp }) => id === last || known.get(id) !== stamp)
+export async function readFresh<Each>(
+  store: Store,
+  folder: string,
+  known: Stamps,
+  read: (id: string) => Promise<Each>,
+  { changedPrefix = '', extension = '.md', isWanted = () => true }: { readonly changedPrefix?: string; readonly extension?: string; readonly isWanted?: ((id: string) => boolean) | undefined } = {},
+) {
+  const [stored, last] = await Promise.all([storedFiles(store, folder, extension), known.size === 0 ? undefined : lastWritten(store)])
+  const files = stored.filter(({ id }) => isWanted(id))
+  const fresh = files.filter(({ id, stamp }) => `${changedPrefix}${id}` === last || known.get(id) !== stamp)
   const values = await Promise.all(fresh.map(({ id }) => read(id).then((value) => ({ id, value }), (error: unknown) => ({ id, reason: reasonOf(error) }))))
   return {
     read: values.flatMap((each) => ('value' in each ? [[each.id, each.value] as const] : [])),
@@ -159,7 +166,7 @@ export function readerOf(store: Store): Reader {
   return { read: () => inTurn(() => readOnce(false)), readAll: () => inTurn(() => readOnce(true)) }
 }
 
-async function save(store: Store, path: string, id: string, text: string, at = new Date().toISOString()): Promise<void> {
+export async function save(store: Store, path: string, id: string, text: string, at = new Date().toISOString()): Promise<void> {
   await store.disk.write(path, text)
   await store.disk.write(store.changed, `${at} ${id}\n`)
 }
@@ -187,7 +194,7 @@ async function writeItem(store: Store, item: Item, written: number): Promise<Ite
 
 const writes = new WeakMap<Disk, Turns>()
 
-function inWriteTurn<Done>(store: Store, write: () => Promise<Done>): Promise<Done> {
+export function inWriteTurn<Done>(store: Store, write: () => Promise<Done>): Promise<Done> {
   const turns = writes.get(store.disk) ?? oneAtATime()
   writes.set(store.disk, turns)
   return turns(write)

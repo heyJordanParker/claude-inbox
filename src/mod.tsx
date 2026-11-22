@@ -1,25 +1,41 @@
-import { defineMod, device, fs, http, messageOf, process, sessions, type Mod } from '../node_modules/@cmodjs/core/mod.js'
+import { defineMod, device, fs, http, messageOf, process, sessions, ToolCall, ToolGroup, ToolResult, type Mod, type View } from '../node_modules/@cmodjs/core/mod.js'
 import { program } from '../node_modules/@cmodjs/core/jobs/program.js'
 import { slashCommand } from '../node_modules/@cmodjs/core/jobs/slash-command.js'
+import { Box } from '../node_modules/@cmodjs/core/ui/elements.js'
 import { List, Paragraph } from '../node_modules/@cmodjs/core/ui/markdown.js'
-import { learnSenders, load, loadAll, shownIn, startDelivery, storeOf, widenTo } from './actions.js'
+import { followProgress, hearGoalChanges, learnSessions, load, loadAll, shownIn, startDelivery, storeOf, widenTo } from './actions.js'
 import { isWriting, markRead, setEditing, view } from './answers.js'
+import { installGates, toastWaiting } from './gates.js'
 import { current as contentOf, type Item } from './items/item.js'
 import { rereadMs, savedServer, serverPath, type Server } from './items/store.js'
 import { LinkedBlock } from './links.js'
+import { closeField } from './requirements.js'
 import { fileView, showFile } from './views/file.js'
+import { goalView } from './views/goal.js'
 import { inboxView } from './views/inbox.js'
+import { tasksView } from './views/tasks.js'
 import { initialState, type InboxState } from './state.js'
 import { inboxTools } from './tools.js'
+import { goalWidget } from './widgets/goal.js'
+import { sessionsWidget } from './widgets/sessions.js'
+import { taskWidget } from './widgets/task.js'
 import { waitingWidget } from './widgets/waiting.js'
 
 const titleOf = (item: Item) => contentOf(item).title
+
+const progressTool = 'mcp__inbox__progress'
+
+function UnlessProgress({ tool, isExpanded, Default }: { readonly tool: string; readonly isExpanded?: boolean; readonly Default: (props: Record<never, never>) => JSX.Element }): JSX.Element {
+  return tool === progressTool && isExpanded !== true ? <Box /> : <Default />
+}
 
 export const inbox = defineMod({
   name: 'inbox',
   state: initialState,
   hotkeys: {
     toggle: { title: 'Show or hide the inbox' },
+    goal: { title: "Show or hide the session's goal and your requirements" },
+    tasks: { title: "Show or hide the session's tasks and progress" },
   },
 
   setup(mod) {
@@ -65,18 +81,42 @@ export const inbox = defineMod({
       if (item === undefined) return current.toast.warning(`The inbox has no item ${id}`)
       return show(current, id, true)
     }
+    const goal = mod.views.add(goalView((key): Promise<void> => goal.focus(key)))
+    const tasks = mod.views.add(tasksView(linked, (key): Promise<void> => tasks.focus(key)))
+    const openGoal = () => goal.open({ focus: true })
+    const openTasks = () => tasks.open({ focus: true })
+    const toggleView = async (current: Mod<InboxState>, shown: View, open: () => Promise<void>): Promise<void> => {
+      if (!shown.isShown) return open()
+      closeField(current)
+      await shown.close()
+    }
 
-    const loaded = startDelivery(mod).then(() => load(mod))
-    fs.onChange({ path: store.changed }, () => load(mod))
-    mod.every(rereadMs, () => Promise.all([load(mod), learnSenders(mod)]))
-    sessions.current.onSessionStart(() => loadAll(mod))
+    const reload = () => load(mod).then(() => toastWaiting(mod, linked))
+    const loaded = startDelivery(mod)
+      .then(() => load(mod))
+      .then(() => toastWaiting(mod, linked, true))
+    fs.onChange({ path: store.changed }, reload)
+    void followProgress(mod)
+    mod.every(rereadMs, () => Promise.all([reload(), learnSessions(mod)]))
+    sessions.current.onSessionStart(() => Promise.all([loadAll(mod).then(() => toastWaiting(mod, linked, true)), learnSessions(mod)]))
+    void learnSessions(mod)
+    installGates(mod, loaded)
     for (const job of inboxTools(loaded, filed)) mod.use(job)
-    const web = mod.use(program({ command: ['inbox', 'serve', '--data', mod.dataFolder], isService: true }))
+    const web = mod.use(program({ command: ['inbox', 'serve', '--data', mod.dataFolder], isService: true, isWebApp: true }))
+    void hearGoalChanges(mod, web)
 
     mod.widgets.add(waitingWidget(open))
+    mod.widgets.add(goalWidget(openGoal))
+    mod.widgets.add(taskWidget(openTasks))
+    mod.widgets.add(sessionsWidget)
     mod.hotkeys.toggle.onPress(() => toggle(mod))
+    mod.hotkeys.goal.onPress(() => toggleView(mod, goal, openGoal))
+    mod.hotkeys.tasks.onPress(() => toggleView(mod, tasks, openTasks))
     mod.use(slashCommand({ name: 'inbox', description: 'Show or hide the inbox: the proposals, options, questions, and reports agents bring you', immediate: true, reply: (_, current) => toggle(current) }))
     mod.styles.add({ kind: Paragraph, render: (current, props) => <LinkedBlock props={props} items={store.items} onOpen={(id) => linked(current, id)} /> })
     mod.styles.add({ kind: List, render: (current, props) => <LinkedBlock props={props} items={store.items} onOpen={(id) => linked(current, id)} /> })
+    mod.styles.add({ kind: ToolCall, render: (_, props) => <UnlessProgress {...props} /> })
+    mod.styles.add({ kind: ToolResult, render: (_, props) => <UnlessProgress {...props} /> })
+    mod.styles.add({ kind: ToolGroup, render: (_, { calls, Default }) => (calls.some((call) => call.tool === progressTool) ? <Default isExpanded /> : <Default />) })
   },
 })

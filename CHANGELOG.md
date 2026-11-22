@@ -2,6 +2,22 @@
 
 What changed in each version of inbox, for the people who use it. cmod publish releases the section for the version, and the Updated toast and Settings show it.
 
+## [0.6.0]
+
+### Added
+- Every prompt you send and every inbox answer you give with words is filed into the session's requirements in your exact words, grouped by Capability. An agent cannot end its turn while a prompt of yours is unfiled, and the inbox refuses a quote that is not word for word what you wrote.
+- Agents keep their tasks in the inbox with `plan`, `start`, `finish` with evidence, `wait` on your answer or on another task, and `drop` with the reason. Claude Code's own checklist is refused with a pointer to them, so each session has one task list. A task waits on you exactly while the item it names is open, and another session or a subagent can take a planned task, so parallel sessions split one plan.
+- After every compaction and at every session start, the agent reads its goal, your requirements with your quotes, and its open tasks again, and a subagent gets them at its start.
+- The Goal view shows the session's goal with Edit, your requirements with ✓ or ○ and your quotes under each, Correct… on each, and Add a requirement. The Tasks view shows done of total, a bar, each task's state with Open on one that waits on you, Reopen on a done task, Correct… on each task, and the agent's progress.
+- An agent sets its progress with one `progress` tool built from a bar, a checklist, a note, a table, and the `steps` and `tasks` presets. The call and its result draw no row in the chat, and `inbox progress` updates it from a long command, such as a test run, with no tool call.
+- Three widgets you place in Settings: the goal with requirements met below the prompt, the active task with its time under the spinner, and a Sessions list on the Dashboard with every running session's goal and what waits on you. A toast tells you when a task starts waiting on you.
+- The Goal and Tasks views each have a hotkey you bind in Settings, unbound at first.
+- Templates: `plan` reads a Markdown task list from `<project>/.claude/cmods/inbox/templates/` or `~/.claude/cmods/inbox/templates/`, and a task marked `(required)` cannot be dropped.
+- Other mods hear each goal, requirement, task, and progress change through the `inbox/Goals` interface.
+
+### Changed
+- The browser inbox is on your tailnet with nothing to run, and only your own Tailscale login gets in. On this computer it answers as before.
+
 ## [0.5.0]
 
 ### Added

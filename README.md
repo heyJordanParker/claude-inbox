@@ -120,9 +120,61 @@ The actions follow the review and inbox tools you already use. **Approve**, **Re
 
 **Open in browser**, or `o`, opens the inbox in your browser with the same scope as the page: the list from the list, and the item from an item. The browser shows the same items, notes, read marks, folds, and actions, with the same keys, plus room for wide diagrams and long diffs. A note or answer you give in one view shows in the other, and an item an agent files appears in the open tab without a reload.
 
-One `inbox` program serves the browser for the whole computer, at `http://127.0.0.1:<port>`. It runs whenever you are logged in, as a service of the computer, so the browser view works with no Claude Code open. The address stays the same across restarts, so a bookmark keeps working. It listens only on this computer. To read the inbox on your other devices, put it on your tailnet with `tailscale serve --https=8443 <port>`. The list carries each item's title, and the browser reads an item whole when you open it. When the program restarts on a new version, the tab shows "Reconnecting to the inbox…" until it is back.
+One `inbox` program serves the browser for the whole computer, at `http://127.0.0.1:<port>`. It runs whenever you are logged in, as a service of the computer, so the browser view works with no Claude Code open. The address stays the same across restarts, so a bookmark keeps working. While Tailscale is signed in with HTTPS on, the browser view is also on your tailnet at `https://<computer>.<tailnet>.ts.net:<port>/`, so it opens from your other devices with nothing to run. Settings, under cmod, shows that address in the inbox's entry. Only your own Tailscale login gets in through the tailnet, and any other login, a tagged device, or another host name gets 403. The list carries each item's title, and the browser reads an item whole when you open it. When the program restarts on a new version, the tab shows "Reconnecting to the inbox…" until it is back.
 
 Your items and answers stay in `~/.local/share/cmod/data/inbox/`, the same files the terminal reads, so both views always agree.
+
+## Each session's goal and tasks show beside it
+
+The **Goal** view shows the session's goal, with **Edit**, and your requirements grouped by Capability. Each requirement is the agent's one line with ✓ once every task that serves it is done, and your exact words folded under ▸. Unfolding them shows **Correct…**, which sends the agent your correction and keeps it as a new quote. **Add a requirement** files one in your words. **Save and tell Claude** sets the goal and tells the agent, as a note while it works and as a prompt while it waits.
+
+```text
+Goal · claude inbox                                 [ Edit ]
+You see each agent's progress in the Sidebar, not the chat
+1 of 2 requirements met · 1 waits on you
+
+Progress view
+  ✓ Progress shows beside the session
+    ▸ "this isn't at all effective & should work inside…"
+  ○ Agents script it from primitives and presets
+    ▸ "Agents script it from primitives and presets"
+
+[ Add a requirement ]
+
+1 prompt of yours is not filed yet
+```
+
+The **Tasks** view shows the session's tasks with a bar for those done, then the agent's progress. A task waiting on you has **Open**, which opens the item it waits on. A done task's evidence unfolds, with **Reopen**, which plans it again. Pressing a task's title unfolds **Correct…**, which sends the agent your correction and keeps it under the task, and the agent reads it again after every compaction.
+
+```text
+Tasks · claude inbox                       1 of 5 done · 38m
+████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+
+Active   Move the browser view to cmod 8.0               12m
+Waiting  Draw the Tasks view                        [ Open ]
+         on you: Approve the Tasks view?
+Waiting  Hide the progress tool's chat row
+         after: Move the browser view to cmod 8.0
+Done     Store requirements with your quotes    ▸ ✓ evidence
+Planned  Write the README section
+
+Progress
+  Tests ██████████████████████████████░░░░░░░░░░░ 121 of 164
+```
+
+Three widgets show the gist without a view, and you place each in Settings, under cmod, Widgets: the goal with requirements met below the prompt, the active task with its time under the spinner, and every running session's goal on the Dashboard. Pressing the goal or the task opens its view. The "Show or hide the session's goal and your requirements" and "Show or hide the session's tasks and progress" hotkeys start unbound, and you pick their keys in Settings, under inbox, Hotkeys, or with `cmod hotkeys set inbox goal <combo>` and `cmod hotkeys set inbox tasks <combo>`.
+
+## Progress stays out of the chat
+
+An agent keeps its session's progress in the inbox instead of repeating it in its replies, and the Tasks view shows it. It sets every block at once with the `progress` tool: a bar, a checklist, a note, a table, and the `steps` and `tasks` presets. Each call replaces the blocks before it, so only the current state is kept. The call and its result draw no row in the chat, and ctrl+o still shows them.
+
+A long command, such as a test run, updates the progress while it runs, with no tool call:
+
+```bash
+inbox progress '[{ "kind": "bar", "label": "Tests", "done": 121, "total": 164 }]'
+```
+
+It sets the progress of the session in `CLAUDE_CODE_SESSION_ID`, which Claude Code sets in every Bash command, or of the one `--session` names, and takes the blocks on stdin too. Each session's progress is `progress/<session>.json` in the data folder. That session's Tasks view rereads it as soon as it changes, and other mods hear it through `inbox/Goals`.
 
 ## What agents call
 
@@ -135,9 +187,39 @@ Your items and answers stay in `~/.local/share/cmod/data/inbox/`, the same files
 | `revise` | Replaces an item with a new revision, from any session, and subscribes that session |
 | `withdraw` | Takes an item out of the inbox |
 | `subscribe`, `unsubscribe` | Starts or stops hearing an item's changes in this session |
-| `read` | Lists the open items, or reads one with every answer |
+| `read` | Lists the open items, or reads one with every answer. With `session`, reads that session's goal, your requirements in your exact words, and its tasks |
+| `goal` | Sets what this session is for, in one plain sentence, on top of the Goal view |
+| `file` | Files your prompt or worded answer into requirements, in your exact words, and the turn cannot end until each is filed |
+| `plan` | Adds tasks to this session's list, each naming the requirements it serves, or a template's list |
+| `start` | Takes a planned task, in this session's list or another session's, and the turn cannot end while it is active |
+| `finish` | Marks an active task done, with the evidence that shows it works |
+| `wait` | Makes a task wait on your answer to an open inbox item, or after another task in the same list |
+| `drop` | Drops a planned or active task with the reason, unless its template marks it required |
+| `progress` | Replaces this session's progress, with no row in the chat |
 
 Claude sees each as `mcp__inbox__<tool>`. A project adds its own checks as ordinary `PreToolUse` hooks with the matcher `mcp__inbox__.*`. A hook that exits with code 2 refuses the call, and its stderr reaches the agent.
+
+## Other mods read your agents' goals
+
+Another mod reads each session's requirements, tasks, and progress through the `inbox/Goals` interface, so it never parses the inbox's files. The `inbox` program provides it for the whole computer while it runs as a service:
+
+```ts
+import { providers } from '../node_modules/@cmodjs/core/mod.js'
+
+const [inbox] = await providers('inbox/Goals')
+inbox?.onChange(async ({ session }) => {
+  const { goals } = await inbox.goals(session)
+  mod.log(`${session}: ${goals?.tasks.filter((task) => task.state === 'done').length ?? 0} tasks done`)
+})
+```
+
+The interface has two methods and one event:
+
+- `goals(session)` answers the session's requirements and tasks as `goals`, and its progress blocks as `progress`, each absent when the session has none
+- `sessions()` answers the id of every session with a goals or progress file
+- `Change { session, part }` comes after each write, with `part` set to `goals` or `progress`, once `goals(session)` answers the new file, and with `part` set to `goal` when a session on this computer changes its goal, whose text `goals(session)` does not hold, so a mod reads it from cmod
+
+A mod that lists `inbox` in the `dependencies` of its `.claude-plugin/plugin.json` gets these types from the inbox's `types/index.d.ts`. A mod that does not list it copies the `'inbox/Goals'` entry of that file into its own `types/index.d.ts`. The service is a new provider each time it restarts on a new version, so a mod that keeps listening asks `providers('inbox/Goals')` again on each `Change` that `cmod/Providers` tells.
 
 ## Install
 
